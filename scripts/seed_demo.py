@@ -73,32 +73,30 @@ async def create_users(db: AsyncSession, tenant: Tenant) -> list[User]:
 
 
 async def create_cost_natures(db: AsyncSession, tenant: Tenant) -> dict:
-    """Create cost nature types."""
+    """Create cost nature categories (purely what is being bought, not how it's paid)."""
     natures = {}
+    # 6 pure categories — payment flow is now a separate field on Item
     nature_data = [
-        ("Hébergement", True, False, False),
-        ("Transport", True, False, False),
-        ("Activité", True, False, False),
-        ("Guide", False, True, False),
-        ("Restaurant", True, False, False),
-        ("Entrées/Visites", True, False, False),
-        ("Assurance", False, False, False),
-        ("Frais agence", False, False, True),
+        ("HTL", "Hébergement"),
+        ("TRS", "Transport"),
+        ("ACT", "Activité/Excursion"),
+        ("GDE", "Équipe"),
+        ("RES", "Restauration"),
+        ("MIS", "Divers"),
     ]
 
-    for name, triggers_booking, triggers_payroll, triggers_advance in nature_data:
+    for code, label in nature_data:
         nature = CostNature(
             tenant_id=tenant.id,
-            name=name,
-            triggers_booking=triggers_booking,
-            triggers_payroll=triggers_payroll,
-            triggers_advance=triggers_advance,
+            code=code,
+            label=label,
+            is_system=True,
         )
         db.add(nature)
-        natures[name] = nature
+        natures[label] = nature
 
     await db.flush()
-    print(f"✅ Created {len(natures)} cost natures")
+    print(f"✅ Created {len(natures)} cost nature categories")
     return natures
 
 
@@ -301,6 +299,7 @@ async def create_trip_template(
                 formula_id=formula.id,
                 name="Transfert aéroport - Riad",
                 cost_nature_id=cost_natures["Transport"].id,
+                payment_flow="booking",
                 supplier_id=suppliers["Atlas Transport"].id,
                 currency="MAD",
                 unit_cost=Decimal("400"),
@@ -331,6 +330,7 @@ async def create_trip_template(
                 formula_id=formula2.id,
                 name="Chambre double Riad",
                 cost_nature_id=cost_natures["Hébergement"].id,
+                payment_flow="booking",
                 supplier_id=suppliers["Hotel Marrakech Riad"].id,
                 currency="MAD",
                 unit_cost=Decimal("1200"),
@@ -362,6 +362,7 @@ async def create_trip_template(
                 formula_id=formula.id,
                 name="Guide francophone",
                 cost_nature_id=cost_natures["Guide"].id,
+                payment_flow="payroll",
                 currency="MAD",
                 unit_cost=Decimal("800"),
                 pricing_method="quotation",
@@ -378,7 +379,8 @@ async def create_trip_template(
                 tenant_id=tenant.id,
                 formula_id=formula.id,
                 name="Entrées monuments",
-                cost_nature_id=cost_natures["Entrées/Visites"].id,
+                cost_nature_id=cost_natures["Activité/Excursion"].id,
+                payment_flow="advance",
                 currency="MAD",
                 unit_cost=Decimal("120"),
                 pricing_method="quotation",
@@ -409,6 +411,7 @@ async def create_trip_template(
                 formula_id=formula.id,
                 name="4x4 avec chauffeur",
                 cost_nature_id=cost_natures["Transport"].id,
+                payment_flow="booking",
                 supplier_id=suppliers["Atlas Transport"].id,
                 currency="MAD",
                 unit_cost=Decimal("2200"),
@@ -439,7 +442,8 @@ async def create_trip_template(
                 tenant_id=tenant.id,
                 formula_id=formula.id,
                 name="Nuit bivouac + dromadaires",
-                cost_nature_id=cost_natures["Activité"].id,
+                cost_nature_id=cost_natures["Activité/Excursion"].id,
+                payment_flow="booking",
                 supplier_id=suppliers["Desert Tours Morocco"].id,
                 currency="EUR",
                 unit_cost=Decimal("85"),

@@ -34,6 +34,7 @@ settings = get_settings()
 class CatalogTripDay(BaseModel):
     """Public day information."""
     day_number: int
+    day_number_end: Optional[int] = None
     title: Optional[str]
     description: Optional[str]
     location_from: Optional[str]

@@ -68,7 +68,8 @@ class User(Base, TimestampMixin):
     preferences: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     # Relationships
-    tenant: Mapped["Tenant"] = relationship("Tenant", back_populates="users")
+    # Use lazy="raise" to prevent accidental lazy loading in async context
+    tenant: Mapped["Tenant"] = relationship("Tenant", back_populates="users", lazy="raise")
 
     def __repr__(self) -> str:
         return f"<User(id={self.id}, email='{self.email}', role='{self.role}')>"

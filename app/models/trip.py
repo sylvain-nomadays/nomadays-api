@@ -19,6 +19,10 @@ if TYPE_CHECKING:
     from app.models.dossier import Dossier
     from app.models.travel_theme import TravelTheme
     from app.models.trip_location import TripLocation
+    from app.models.trip_photo import TripPhoto
+    from app.models.location import Location
+    from app.models.formula import Formula
+    from app.models.condition import Condition, ConditionOption, TripCondition
 
 
 # Many-to-many junction table for Trip <-> TravelTheme
@@ -225,6 +229,18 @@ class Trip(TenantBase):
         cascade="all, delete-orphan",
         order_by="TripDay.day_number",
     )
+    transversal_formulas: Mapped[List["Formula"]] = relationship(
+        "Formula",
+        back_populates="trip",
+        foreign_keys="Formula.trip_id",
+        cascade="all, delete-orphan",
+        order_by="Formula.sort_order",
+    )
+    trip_conditions: Mapped[List["TripCondition"]] = relationship(
+        "TripCondition",
+        back_populates="trip",
+        cascade="all, delete-orphan",
+    )
     pax_configs: Mapped[List["TripPaxConfig"]] = relationship(
         "TripPaxConfig",
         back_populates="trip",
@@ -257,6 +273,13 @@ class Trip(TenantBase):
         "TripTranslationCache",
         back_populates="trip",
         cascade="all, delete-orphan",
+    )
+    # Photos (AI-generated or uploaded)
+    photos: Mapped[List["TripPhoto"]] = relationship(
+        "TripPhoto",
+        back_populates="trip",
+        cascade="all, delete-orphan",
+        order_by="TripPhoto.sort_order",
     )
 
     def __repr__(self) -> str:
@@ -294,23 +317,44 @@ class TripDay(TenantBase):
 
     # Day info
     day_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    day_number_end: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # NULL = single day, value = range end
     title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     description: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
 
-    # Locations
+    # Locations (text fields for display)
     location_from: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     location_to: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+    # Location FK (link to static Location entity for geographic organization)
+    location_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        ForeignKey("locations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # Ordering
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
 
+    # Meals included
+    breakfast_included: Mapped[bool] = mapped_column(Boolean, default=False)
+    lunch_included: Mapped[bool] = mapped_column(Boolean, default=False)
+    dinner_included: Mapped[bool] = mapped_column(Boolean, default=False)
+
     # Relationships
     trip: Mapped["Trip"] = relationship("Trip", back_populates="days")
+    location: Mapped[Optional["Location"]] = relationship("Location")
     formulas: Mapped[List["Formula"]] = relationship(
         "Formula",
         back_populates="trip_day",
         cascade="all, delete-orphan",
         order_by="Formula.sort_order",
+    )
+    photos: Mapped[List["TripPhoto"]] = relationship(
+        "TripPhoto",
+        back_populates="trip_day",
+        cascade="all, delete-orphan",
+        order_by="TripPhoto.sort_order",
     )
 
     def __repr__(self) -> str:
@@ -363,4 +407,6 @@ class TripPaxConfig(TenantBase):
 
 # Import at end to avoid circular imports
 from app.models.formula import Formula
+from app.models.condition import Condition, ConditionOption, TripCondition
 from app.models.trip_translation_cache import TripTranslationCache
+from app.models.trip_photo import TripPhoto

@@ -19,7 +19,10 @@ from sqlalchemy.orm import selectinload
 from app.api.deps import DbSession, CurrentTenant
 from app.models.trip import Trip, TripDay, TripPaxConfig
 from app.models.formula import Formula
-from app.models.item import Item
+from app.models.item import Item, ItemPriceTier
+from app.models.condition import TripCondition
+from app.models.country_vat_rate import CountryVatRate
+from app.models.pax_category import PaxCategory
 from app.services.quotation_engine import QuotationEngine, MissingExchangeRateError
 
 router = APIRouter()
@@ -41,6 +44,7 @@ class ItemCostDetail(BaseModel):
     item_currency: str
     exchange_rate: float
     vat_recoverable: float = 0.0
+    vat_surcharge: float = 0.0
 
 
 class FormulaCostDetail(BaseModel):
@@ -85,6 +89,7 @@ class PaxConfigResult(BaseModel):
     pax_config_id: int
     label: str
     total_pax: int
+    paying_pax: int = 0  # Pax counted for price_per_person (excludes tour_leader etc.)
     args: Dict[str, int]
     days: List[DayCostDetail]
     total_cost: float
@@ -92,6 +97,7 @@ class PaxConfigResult(BaseModel):
     total_profit: float
     cost_per_person: float
     price_per_person: float
+    price_per_paying_person: float = 0.0  # Price divided by paying pax only
     margin_pct: float
     # New: VAT and commission details
     vat: Optional[VatDetail] = None
@@ -127,16 +133,50 @@ async def calculate_quotation(
     2. For each pax config, calculates costs using the quotation engine
     3. Returns detailed cost breakdown and totals
     """
-    # Load trip with full structure
+    # Load trip with full structure (including condition options on formulas)
     result = await db.execute(
         select(Trip)
         .where(Trip.id == trip_id, Trip.tenant_id == tenant.id)
         .options(
+            # Day-level formulas with items, seasons, and price tiers
             selectinload(Trip.days)
             .selectinload(TripDay.formulas)
             .selectinload(Formula.items)
             .selectinload(Item.seasons),
+            selectinload(Trip.days)
+            .selectinload(TripDay.formulas)
+            .selectinload(Formula.items)
+            .selectinload(Item.price_tiers),
+            # Day-level items: load condition_option (for item-level condition check)
+            selectinload(Trip.days)
+            .selectinload(TripDay.formulas)
+            .selectinload(Formula.items)
+            .selectinload(Item.condition_option),
+            # Day-level items: load cost_nature (for VAT category lookup)
+            selectinload(Trip.days)
+            .selectinload(TripDay.formulas)
+            .selectinload(Formula.items)
+            .selectinload(Item.cost_nature),
+            # Transversal formulas with items, seasons, and price tiers
+            selectinload(Trip.transversal_formulas)
+            .selectinload(Formula.items)
+            .selectinload(Item.seasons),
+            selectinload(Trip.transversal_formulas)
+            .selectinload(Formula.items)
+            .selectinload(Item.price_tiers),
+            # Transversal items: load condition_option
+            selectinload(Trip.transversal_formulas)
+            .selectinload(Formula.items)
+            .selectinload(Item.condition_option),
+            # Transversal items: load cost_nature (for VAT category lookup)
+            selectinload(Trip.transversal_formulas)
+            .selectinload(Formula.items)
+            .selectinload(Item.cost_nature),
+            # Pax configs
             selectinload(Trip.pax_configs),
+            # Trip conditions (for item-level condition check)
+            selectinload(Trip.trip_conditions)
+            .selectinload(TripCondition.selected_option),
         )
     )
     trip = result.scalar_one_or_none()
@@ -147,6 +187,36 @@ async def calculate_quotation(
             detail="Trip not found",
         )
 
+    # Load CountryVatRate for destination country (used for VAT surcharge on HT items)
+    country_vat_rate = None
+    destination_country = getattr(trip, "destination_country", None)
+    if destination_country:
+        cvr_result = await db.execute(
+            select(CountryVatRate).where(
+                CountryVatRate.tenant_id == tenant.id,
+                CountryVatRate.country_code == destination_country,
+                CountryVatRate.is_active == True,
+            )
+        )
+        country_vat_rate = cvr_result.scalar_one_or_none()
+
+    # Build trip conditions map: condition_id → TripCondition
+    trip_conditions_map: Dict[int, Any] = {
+        tc.condition_id: tc for tc in (trip.trip_conditions or [])
+    }
+
+    # Load pax categories to determine paying pax
+    pax_cats_result = await db.execute(
+        select(PaxCategory).where(
+            PaxCategory.tenant_id == tenant.id,
+            PaxCategory.is_active == True,
+        )
+    )
+    pax_categories = pax_cats_result.scalars().all()
+    paying_pax_categories = {
+        cat.code for cat in pax_categories if cat.counts_for_pricing
+    } if pax_categories else None
+
     # Initialize quotation engine
     engine = QuotationEngine(
         default_margin_pct=float(trip.margin_pct),
@@ -154,6 +224,7 @@ async def calculate_quotation(
         currency=trip.default_currency,
         duration_days=trip.duration_days,
         start_date=trip.start_date,
+        paying_pax_categories=paying_pax_categories,
     )
 
     # Get trip settings for VAT and commissions
@@ -197,6 +268,15 @@ async def calculate_quotation(
                 formula_total_price = Decimal("0")
 
                 for item in sorted(formula.items, key=lambda i: i.sort_order):
+                    # Check item-level condition
+                    include, reason = QuotationEngine.should_include_item(
+                        item, formula, trip_conditions_map
+                    )
+                    if not include:
+                        if reason:
+                            warnings.append(reason)
+                        continue
+
                     # Calculate item cost with currency conversion
                     try:
                         item_result = engine.calculate_item(
@@ -205,6 +285,7 @@ async def calculate_quotation(
                             total_pax=total_pax,
                             formula=formula,
                             trip=trip,
+                            country_vat_rate=country_vat_rate,
                         )
                     except MissingExchangeRateError as e:
                         # Track missing rates but continue with local currency
@@ -222,6 +303,7 @@ async def calculate_quotation(
                             "selling_currency": trip.default_currency or "EUR",
                             "exchange_rate": Decimal("1.00"),
                             "vat_recoverable": Decimal("0.00"),
+                            "vat_surcharge": Decimal("0.00"),
                             "warnings": [],
                         }
 
@@ -249,6 +331,7 @@ async def calculate_quotation(
                         item_currency=item_result["item_currency"],
                         exchange_rate=float(item_result["exchange_rate"]),
                         vat_recoverable=float(item_result["vat_recoverable"]),
+                        vat_surcharge=float(item_result.get("vat_surcharge", 0)),
                     ))
 
                     formula_total_cost += item_cost
@@ -282,10 +365,81 @@ async def calculate_quotation(
             config_total_cost += day_total_cost
             config_total_price += day_total_price
 
+        # Transversal formulas (trip-level recurring services)
+        for formula in sorted(
+            getattr(trip, "transversal_formulas", []),
+            key=lambda f: f.sort_order,
+        ):
+            items_detail = []
+            formula_total_cost = Decimal("0")
+            formula_total_price = Decimal("0")
+
+            for item in sorted(formula.items, key=lambda i: i.sort_order):
+                # Check item-level condition
+                include, reason = QuotationEngine.should_include_item(
+                    item, formula, trip_conditions_map
+                )
+                if not include:
+                    if reason:
+                        warnings.append(reason)
+                    continue
+
+                try:
+                    item_result = engine.calculate_item(
+                        item=item,
+                        pax_args=pax_args,
+                        total_pax=total_pax,
+                        formula=formula,
+                        trip=trip,
+                        country_vat_rate=country_vat_rate,
+                    )
+                except MissingExchangeRateError as e:
+                    if e.from_currency not in missing_rates:
+                        missing_rates.append(e.from_currency)
+                        warnings.append(e.message)
+                    item_result = {
+                        "unit_cost_local": item.unit_cost or Decimal("0"),
+                        "unit_cost": item.unit_cost or Decimal("0"),
+                        "quantity": Decimal("1"),
+                        "subtotal_cost_local": item.unit_cost or Decimal("0"),
+                        "subtotal_cost": item.unit_cost or Decimal("0"),
+                        "item_currency": getattr(item, "currency", "EUR"),
+                        "selling_currency": trip.default_currency or "EUR",
+                        "exchange_rate": Decimal("1.00"),
+                        "vat_recoverable": Decimal("0.00"),
+                        "vat_surcharge": Decimal("0.00"),
+                        "warnings": [],
+                    }
+
+                item_cost = item_result["subtotal_cost"]
+                item_price = engine.apply_margin(
+                    cost=item_cost,
+                    margin_pct=effective_margin,
+                    pricing_method=item.pricing_method,
+                    pricing_value=float(item.pricing_value) if item.pricing_value else None,
+                )
+
+                formula_total_cost += item_cost
+                formula_total_price += item_price
+                config_vat_recoverable += item_result["vat_recoverable"]
+
+                if item_result.get("warnings"):
+                    warnings.extend(item_result["warnings"])
+
+            # Add transversal formula totals to config totals
+            config_total_cost += formula_total_cost
+            config_total_price += formula_total_price
+
         # Calculate totals for this pax config
         total_profit = config_total_price - config_total_cost
+        paying_pax_count = engine.get_paying_pax(pax_args)
         cost_per_person = config_total_cost / total_pax if total_pax > 0 else Decimal("0")
         price_per_person = config_total_price / total_pax if total_pax > 0 else Decimal("0")
+        price_per_paying_person = (
+            config_total_price / paying_pax_count
+            if paying_pax_count > 0
+            else Decimal("0")
+        )
         actual_margin = (
             (total_profit / config_total_price * 100)
             if config_total_price > 0
@@ -338,6 +492,7 @@ async def calculate_quotation(
             pax_config_id=pax_config.id,
             label=pax_config.label,
             total_pax=total_pax,
+            paying_pax=paying_pax_count,
             args=pax_args,
             days=days_detail,
             total_cost=float(config_total_cost),
@@ -345,6 +500,7 @@ async def calculate_quotation(
             total_profit=float(total_profit),
             cost_per_person=float(cost_per_person),
             price_per_person=float(price_per_person),
+            price_per_paying_person=float(price_per_paying_person),
             margin_pct=float(actual_margin),
             vat=vat_detail,
             commissions=commission_detail,

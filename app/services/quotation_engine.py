@@ -13,12 +13,13 @@ This engine implements the complex pricing rules:
 
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Dict, Any, List, Optional, TYPE_CHECKING
+from typing import Dict, Any, List, Optional, Set, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from app.models.item import Item
+    from app.models.item import Item, ItemPriceTier
     from app.models.formula import Formula
     from app.models.trip import Trip
+    from app.models.country_vat_rate import CountryVatRate
 
 
 class MissingExchangeRateError(Exception):
@@ -43,9 +44,6 @@ class QuotationEngine:
     - Multiple pricing/margin methods
     """
 
-    # Valid pax categories
-    PAX_CATEGORIES = {"adult", "teen", "child", "baby"}
-
     def __init__(
         self,
         default_margin_pct: float = 30.0,
@@ -53,12 +51,59 @@ class QuotationEngine:
         currency: str = "EUR",
         duration_days: int = 1,
         start_date: Optional[date] = None,
+        paying_pax_categories: Optional[Set[str]] = None,
     ):
         self.default_margin_pct = Decimal(str(default_margin_pct))
         self.margin_type = margin_type
         self.currency = currency
         self.duration_days = duration_days
         self.start_date = start_date
+        # Categories that count for price_per_person (excludes tour_leader)
+        # If None, all categories count (backward compatible)
+        self.paying_pax_categories = paying_pax_categories
+
+    # Mapping CostNature codes → CountryVatRate categories
+    COST_NATURE_VAT_CATEGORY = {
+        "HTL": "hotel",
+        "TRS": "transport",
+        "ACT": "activity",
+        "RES": "restaurant",
+        "GDE": "standard",
+        "MIS": "standard",
+    }
+
+    @staticmethod
+    def _cost_nature_to_vat_category(code: str) -> str:
+        """Map a CostNature code to a CountryVatRate category."""
+        return QuotationEngine.COST_NATURE_VAT_CATEGORY.get(code, "standard")
+
+    def _get_item_vat_rate(
+        self,
+        item: "Item",
+        country_vat_rate: Optional["CountryVatRate"],
+    ) -> Optional[float]:
+        """
+        Get applicable VAT rate for an item.
+
+        Priority:
+        1. Item-level explicit vat_rate override
+        2. Country rate by cost nature category
+        3. Country standard rate (fallback)
+        """
+        # 1. Item-level override
+        explicit_rate = getattr(item, "vat_rate", None)
+        if explicit_rate is not None:
+            return float(explicit_rate)
+
+        # 2. Country rate by cost nature category
+        if country_vat_rate:
+            cost_nature = getattr(item, "cost_nature", None)
+            if cost_nature and hasattr(cost_nature, "code"):
+                category = self._cost_nature_to_vat_category(cost_nature.code)
+                return float(country_vat_rate.get_rate_for_category(category))
+            return float(country_vat_rate.vat_rate_standard)
+
+        return None
 
     def calculate_item(
         self,
@@ -67,6 +112,7 @@ class QuotationEngine:
         total_pax: int,
         formula: "Formula",
         trip: "Trip",
+        country_vat_rate: Optional["CountryVatRate"] = None,
     ) -> Dict[str, Any]:
         """
         Calculate cost for a single item with currency conversion.
@@ -80,22 +126,51 @@ class QuotationEngine:
         - item_currency: original currency of the item
         - exchange_rate: rate used for conversion (1.0 if same currency)
         - vat_recoverable: VAT amount recoverable if item is TTC
+        - vat_surcharge: VAT surcharge applied on HT items (on_selling_price mode)
         - warnings: any calculation warnings
         """
         warnings = []
 
-        # 1. Get unit cost in local currency (considering seasons if applicable)
-        unit_cost_local = self._get_unit_cost(item, trip, warnings)
+        # 1. Get unit cost in local currency (considering tiers, then seasons)
+        unit_cost_local, category_costs = self._resolve_unit_cost_with_tiers(
+            item, pax_args, total_pax, trip, warnings
+        )
         item_currency = getattr(item, "currency", None) or "EUR"
 
-        # 2. Handle item-level VAT (TTC → HT conversion)
+        # 2. Handle VAT on cost
         vat_recoverable = Decimal("0.00")
-        if getattr(item, "price_includes_vat", False) and getattr(item, "vat_rate", None):
-            # Item cost is TTC, extract HT cost
-            vat_rate = Decimal(str(item.vat_rate))
-            unit_cost_ht = unit_cost_local / (Decimal("1") + vat_rate / Decimal("100"))
-            vat_recoverable = unit_cost_local - unit_cost_ht
-            unit_cost_local = unit_cost_ht.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        vat_surcharge = Decimal("0.00")
+
+        # Determine if item is TTC (price includes VAT)
+        is_ttc = getattr(item, "price_includes_vat", None)
+        if is_ttc is None:
+            # Fallback to cost_nature default
+            cost_nature = getattr(item, "cost_nature", None)
+            is_ttc = getattr(cost_nature, "vat_recoverable_default", False) if cost_nature else False
+
+        vat_calculation_mode = getattr(trip, "vat_calculation_mode", "on_margin") or "on_margin"
+
+        if is_ttc:
+            # Item is TTC → extract recoverable VAT from cost
+            vat_rate_pct = self._get_item_vat_rate(item, country_vat_rate)
+            if vat_rate_pct and vat_rate_pct > 0:
+                vat_rate = Decimal(str(vat_rate_pct))
+                unit_cost_ht = unit_cost_local / (Decimal("1") + vat_rate / Decimal("100"))
+                vat_recoverable = (unit_cost_local - unit_cost_ht).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )
+                unit_cost_local = unit_cost_ht.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        else:
+            # Item is HT → if on_selling_price mode, surcharge cost by VAT rate
+            # to protect margin from non-recoverable VAT
+            if vat_calculation_mode == "on_selling_price" and country_vat_rate:
+                vat_rate_pct = self._get_item_vat_rate(item, country_vat_rate)
+                if vat_rate_pct and vat_rate_pct > 0:
+                    vat_rate = Decimal(str(vat_rate_pct))
+                    vat_surcharge = (unit_cost_local * vat_rate / Decimal("100")).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    )
+                    unit_cost_local = unit_cost_local + vat_surcharge
 
         # 3. Convert to selling currency if different
         selling_currency = trip.default_currency or "EUR"
@@ -107,24 +182,70 @@ class QuotationEngine:
             vat_recoverable = (vat_recoverable * exchange_rate).quantize(
                 Decimal("0.01"), rounding=ROUND_HALF_UP
             )
+            vat_surcharge = (vat_surcharge * exchange_rate).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
         else:
             exchange_rate = Decimal("1.00")
             unit_cost = unit_cost_local
 
-        # 4. Calculate quantity based on ratio rules
-        quantity = self._calculate_quantity(
-            item=item,
-            pax_args=pax_args,
-            total_pax=total_pax,
-            formula=formula,
-            trip=trip,
-            warnings=warnings,
-        )
+        # 4. Calculate quantity and subtotals
+        if category_costs is not None:
+            # Tiered pricing with category adjustments
+            # Each category has its own adjusted cost
+            # Apply temporal multiplier
+            temporal_multiplier = self._get_temporal_multiplier(item, formula, trip)
+            ratio_type = item.ratio_type or "ratio"
+            ratio_per = item.ratio_per or 1
 
-        # 5. Calculate subtotals
-        subtotal_cost_local = unit_cost_local * quantity
-        subtotal_cost = unit_cost * quantity
-        total_vat_recoverable = vat_recoverable * quantity
+            # For 'set' type with category costs, the tier cost is a total (not per-person)
+            if ratio_type == "set":
+                quantity = Decimal(str(ratio_per * temporal_multiplier))
+                subtotal_cost_local = unit_cost_local * quantity
+                subtotal_cost = unit_cost * quantity
+            else:
+                # 'ratio' type: compute per-category costs
+                subtotal_cost_local = Decimal("0")
+                total_quantity = 0
+                ratio_categories = item.ratio_categories or ""
+                categories_list = [c.strip().lower() for c in ratio_categories.split(",") if c.strip()]
+
+                for cat, count in pax_args.items():
+                    if count <= 0:
+                        continue
+                    if categories_list and "all" not in categories_list and cat not in categories_list:
+                        continue
+
+                    import math
+                    cat_qty = math.ceil(count / ratio_per)
+                    cat_cost = category_costs.get(cat, unit_cost_local)
+                    subtotal_cost_local += cat_cost * Decimal(str(cat_qty)) * Decimal(str(temporal_multiplier))
+                    total_quantity += cat_qty * temporal_multiplier
+
+                quantity = Decimal(str(total_quantity))
+                # Convert subtotal to selling currency
+                subtotal_cost = (subtotal_cost_local * exchange_rate).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                ) if item_currency != selling_currency else subtotal_cost_local
+
+            total_vat_recoverable = vat_recoverable * quantity
+            total_vat_surcharge = vat_surcharge * quantity
+        else:
+            # Standard calculation (no category adjustments)
+            quantity = self._calculate_quantity(
+                item=item,
+                pax_args=pax_args,
+                total_pax=total_pax,
+                formula=formula,
+                trip=trip,
+                warnings=warnings,
+            )
+
+            # 5. Calculate subtotals
+            subtotal_cost_local = unit_cost_local * quantity
+            subtotal_cost = unit_cost * quantity
+            total_vat_recoverable = vat_recoverable * quantity
+            total_vat_surcharge = vat_surcharge * quantity
 
         return {
             "unit_cost_local": unit_cost_local,
@@ -136,6 +257,7 @@ class QuotationEngine:
             "selling_currency": selling_currency,
             "exchange_rate": exchange_rate,
             "vat_recoverable": total_vat_recoverable,
+            "vat_surcharge": total_vat_surcharge,
             "warnings": warnings,
         }
 
@@ -161,6 +283,69 @@ class QuotationEngine:
                         return base_cost * season.cost_multiplier
 
         return base_cost
+
+    def _resolve_unit_cost_with_tiers(
+        self,
+        item: "Item",
+        pax_args: Dict[str, int],
+        total_pax: int,
+        trip: "Trip",
+        warnings: List[str],
+    ) -> Tuple[Decimal, Optional[Dict[str, Decimal]]]:
+        """
+        Determine unit cost: use price tiers if defined, otherwise base unit_cost.
+
+        Returns:
+            (unit_cost, category_costs) where category_costs is a dict of
+            {category: adjusted_cost} if tiers have adjustments, else None.
+        """
+        price_tiers = getattr(item, "price_tiers", None) or []
+        if not price_tiers:
+            # No tiers — use standard cost (with seasonal logic)
+            return (self._get_unit_cost(item, trip, warnings), None)
+
+        # Determine pax count for tier selection
+        tier_categories_str = getattr(item, "tier_categories", None)
+        if tier_categories_str:
+            tier_cats = [c.strip().lower() for c in tier_categories_str.split(",") if c.strip()]
+        else:
+            # Fallback: use ratio_categories
+            tier_cats = [c.strip().lower() for c in (item.ratio_categories or "").split(",") if c.strip()]
+
+        if not tier_cats or "all" in tier_cats:
+            tier_pax_count = total_pax
+        else:
+            tier_pax_count = sum(pax_args.get(cat, 0) for cat in tier_cats)
+
+        # Find matching tier (sorted by pax_min)
+        matching_tier = None
+        for tier in price_tiers:
+            if tier.pax_min <= tier_pax_count <= tier.pax_max:
+                matching_tier = tier
+                break
+
+        if not matching_tier:
+            warnings.append(
+                f"Item '{item.name}': aucun palier trouvé pour {tier_pax_count} pax, "
+                f"utilisation du prix de base"
+            )
+            return (self._get_unit_cost(item, trip, warnings), None)
+
+        base_cost = Decimal(str(matching_tier.unit_cost))
+
+        # Apply category adjustments if present
+        adjustments = matching_tier.category_adjustments_json
+        if adjustments:
+            category_costs: Dict[str, Decimal] = {}
+            for cat, count in pax_args.items():
+                if count <= 0:
+                    continue
+                adj_pct = adjustments.get(cat, 0)  # % adjustment (-10 = -10%)
+                adj_cost = base_cost * (Decimal("1") + Decimal(str(adj_pct)) / Decimal("100"))
+                category_costs[cat] = adj_cost.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            return (base_cost, category_costs)
+
+        return (base_cost, None)
 
     def _get_exchange_rate(
         self,
@@ -260,9 +445,9 @@ class QuotationEngine:
             # Apply to all pax
             relevant_pax = total_pax
         else:
-            # Sum only specified categories
+            # Sum only specified categories (dynamic — accepts any category code)
             relevant_pax = sum(
-                pax_args.get(cat, 0) for cat in categories if cat in self.PAX_CATEGORIES
+                pax_args.get(cat, 0) for cat in categories
             )
 
         if relevant_pax == 0:
@@ -309,6 +494,78 @@ class QuotationEngine:
             return max(1, end - start + 1)
 
         return 1
+
+    @staticmethod
+    def should_include_item(
+        item: "Item",
+        formula: "Formula",
+        trip_conditions_map: Dict[int, Any],
+    ) -> tuple[bool, Optional[str]]:
+        """
+        Check whether an item should be included based on conditions.
+
+        Logic:
+        1. Formula has no condition_id → all items unconditional → include
+        2. Formula has condition_id but item has no condition_option_id → common item → include
+        3. Formula has condition_id and item has condition_option_id:
+           a. Condition not activated on trip → exclude
+           b. Condition deactivated (toggle OFF) → exclude
+           c. selected_option_id != item.condition_option_id → exclude
+           d. Match → include
+
+        Args:
+            item: The item to check
+            formula: The parent formula
+            trip_conditions_map: Dict mapping condition_id → TripCondition
+
+        Returns:
+            (include, reason):
+            - (True, None) if item should be included
+            - (False, reason) if item should be excluded
+        """
+        condition_id = getattr(formula, "condition_id", None)
+        condition_option_id = getattr(item, "condition_option_id", None)
+
+        # 1. Formula without condition → all items unconditional
+        if not condition_id:
+            return True, None
+
+        # 2. Item without condition_option_id → common cost, always included
+        if not condition_option_id:
+            return True, None
+
+        # 3. Both set: check against trip's selected option
+        trip_condition = trip_conditions_map.get(condition_id)
+        if trip_condition is None:
+            # Condition not activated on this trip → exclude
+            return False, (
+                f"Item '{item.name}' exclu "
+                f"(condition non activée sur ce circuit)"
+            )
+
+        # Condition deactivated (toggle OFF) → exclude
+        if not trip_condition.is_active:
+            return False, (
+                f"Item '{item.name}' exclu "
+                f"(condition désactivée)"
+            )
+
+        # Check if selected option matches
+        if trip_condition.selected_option_id != condition_option_id:
+            condition_option = getattr(item, "condition_option", None)
+            item_label = condition_option.label if condition_option else "?"
+            selected_label = (
+                trip_condition.selected_option.label
+                if trip_condition.selected_option
+                else "?"
+            )
+            return False, (
+                f"Item '{item.name}' exclu "
+                f"(option '{item_label}' ≠ sélection '{selected_label}')"
+            )
+
+        # Match! Include the item
+        return True, None
 
     def apply_margin(
         self,
@@ -438,6 +695,20 @@ class QuotationEngine:
             "net_vat": net_vat,
             "price_ttc": price_ttc,
         }
+
+    def get_paying_pax(self, pax_args: Dict[str, int]) -> int:
+        """
+        Get number of paying pax (those who count for price_per_person).
+        Excludes categories like tour_leader where counts_for_pricing=False.
+        """
+        if self.paying_pax_categories is None:
+            # No paying filter set — all pax are paying (backward compatible)
+            return sum(pax_args.values())
+
+        return sum(
+            count for cat, count in pax_args.items()
+            if cat in self.paying_pax_categories
+        )
 
     def calculate_operator_commission(
         self,

@@ -1,6 +1,7 @@
 """
-TravelTheme model - configurable travel themes/categories per tenant.
-Examples: hiking, equestrian, family, luxury, adventure, culture, etc.
+TravelTheme model - fixed travel themes/categories.
+12 themes are pre-defined and seeded per tenant. Not editable by tenants.
+Examples: Culture & Histoire, Nature & Faune, Aventure & Trek, etc.
 """
 
 from typing import Optional, List, TYPE_CHECKING
@@ -17,7 +18,7 @@ if TYPE_CHECKING:
 class TravelTheme(TenantBase):
     """
     A travel theme/category that can be assigned to trips.
-    Configurable per tenant.
+    Fixed list of 12 themes, seeded per tenant. Not user-editable.
     """
 
     __tablename__ = "travel_themes"
@@ -49,18 +50,18 @@ class TravelTheme(TenantBase):
         return f"<TravelTheme(id={self.id}, code='{self.code}', label='{self.label}')>"
 
 
-# Default themes to seed for new tenants
+# Fixed 12 travel themes — not editable by tenants
 DEFAULT_TRAVEL_THEMES = [
-    {"code": "randonnee", "label": "Randonnée", "label_en": "Hiking", "icon": "hiking"},
-    {"code": "equestre", "label": "Équestre", "label_en": "Equestrian", "icon": "horse"},
-    {"code": "famille", "label": "Famille", "label_en": "Family", "icon": "users"},
-    {"code": "luxe", "label": "Luxe", "label_en": "Luxury", "icon": "star"},
-    {"code": "aventure", "label": "Aventure", "label_en": "Adventure", "icon": "mountain"},
-    {"code": "culture", "label": "Culture", "label_en": "Culture", "icon": "landmark"},
-    {"code": "plage", "label": "Plage", "label_en": "Beach", "icon": "umbrella-beach"},
-    {"code": "gastronomie", "label": "Gastronomie", "label_en": "Gastronomy", "icon": "utensils"},
-    {"code": "bien_etre", "label": "Bien-être", "label_en": "Wellness", "icon": "spa"},
-    {"code": "nature", "label": "Nature & Faune", "label_en": "Nature & Wildlife", "icon": "leaf"},
-    {"code": "photo", "label": "Photo", "label_en": "Photography", "icon": "camera"},
-    {"code": "sport", "label": "Sport", "label_en": "Sports", "icon": "person-running"},
+    {"code": "culture_histoire", "label": "Culture & Histoire", "label_en": "Culture & History", "icon": "Bank", "color": "#B45309", "description": "Temples, monuments, traditions, artisanat"},
+    {"code": "nature_faune", "label": "Nature & Faune", "label_en": "Nature & Wildlife", "icon": "Tree", "color": "#16A34A", "description": "Safari, parcs nationaux, faune & flore"},
+    {"code": "aventure_trek", "label": "Aventure & Trek", "label_en": "Adventure & Trek", "icon": "Mountains", "color": "#DC2626", "description": "Randonnée, alpinisme, sports outdoor"},
+    {"code": "plages_iles", "label": "Plages & Îles", "label_en": "Beaches & Islands", "icon": "Island", "color": "#0EA5E9", "description": "Balnéaire, snorkeling, farniente"},
+    {"code": "famille", "label": "Famille", "label_en": "Family", "icon": "UsersThree", "color": "#F59E0B", "description": "Circuits adaptés enfants"},
+    {"code": "luxe_bien_etre", "label": "Luxe & Bien-être", "label_en": "Luxury & Wellness", "icon": "Sparkle", "color": "#7C3AED", "description": "Spas, hôtels premium, relaxation"},
+    {"code": "gastronomie_vins", "label": "Gastronomie & Vins", "label_en": "Gastronomy & Wines", "icon": "Wine", "color": "#BE185D", "description": "Food tours, cours de cuisine, vignobles"},
+    {"code": "hors_sentiers", "label": "Hors des sentiers battus", "label_en": "Off the beaten track", "icon": "Compass", "color": "#059669", "description": "Immersion locale, destinations méconnues"},
+    {"code": "road_trip", "label": "Road Trip", "label_en": "Road Trip", "icon": "Jeep", "color": "#EA580C", "description": "Autotour, liberté, itinérant"},
+    {"code": "croisiere_nautique", "label": "Croisière & Nautique", "label_en": "Cruise & Nautical", "icon": "Boat", "color": "#0284C7", "description": "Croisière, voile, plongée"},
+    {"code": "spiritualite", "label": "Spiritualité & Ressourcement", "label_en": "Spirituality & Retreat", "icon": "Flower", "color": "#8B5CF6", "description": "Yoga, méditation, retraites, pèlerinage"},
+    {"code": "evenements_festivals", "label": "Événements & Festivals", "label_en": "Events & Festivals", "icon": "Confetti", "color": "#E11D48", "description": "Carnavals, fêtes locales"},
 ]

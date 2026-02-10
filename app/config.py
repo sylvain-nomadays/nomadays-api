@@ -3,18 +3,32 @@ Application configuration using pydantic-settings.
 All settings are loaded from environment variables.
 """
 
+import os
 from functools import lru_cache
+from pathlib import Path
 from typing import List
 
+from dotenv import load_dotenv
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Get the directory containing this file (app/)
+APP_DIR = Path(__file__).resolve().parent
+# Project root is one level up
+PROJECT_ROOT = APP_DIR.parent
+# .env file path
+ENV_FILE = PROJECT_ROOT / ".env"
+
+# Load .env file into environment variables BEFORE pydantic-settings reads them
+if ENV_FILE.exists():
+    load_dotenv(ENV_FILE, override=True)
 
 
 class Settings(BaseSettings):
     """Application settings."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(ENV_FILE),
         env_file_encoding="utf-8",
         case_sensitive=False,
     )
@@ -22,7 +36,7 @@ class Settings(BaseSettings):
     # App
     app_name: str = "Nomadays SaaS API"
     debug: bool = False
-    cors_origins: List[str] = ["http://localhost:3000"]
+    cors_origins: List[str] = ["http://localhost:3000", "http://localhost:3001"]
 
     # Database
     database_url: str
@@ -40,6 +54,11 @@ class Settings(BaseSettings):
 
     # Anthropic Claude
     anthropic_api_key: str = ""
+
+    # Google Cloud (Vertex AI — Imagen 3)
+    google_application_credentials: str = ""
+    google_cloud_project: str = ""
+    google_cloud_location: str = "us-central1"
 
     @field_validator("cors_origins", mode="before")
     @classmethod

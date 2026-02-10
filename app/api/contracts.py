@@ -74,7 +74,7 @@ class ContractUpdate(BaseModel):
 
 class ContractResponse(BaseModel):
     id: int
-    tenant_id: int
+    tenant_id: str  # UUID as string for frontend compatibility
     supplier_id: int
     name: str
     reference: Optional[str]
@@ -83,10 +83,48 @@ class ContractResponse(BaseModel):
     payment_terms_json: Optional[dict]
     cancellation_terms_json: Optional[dict]
     status: str
+    notes: Optional[str] = None  # Manual notes
+    ai_warnings: Optional[List[str]] = None  # AI-extracted warnings
     rates: List[ContractRateResponse] = []
 
     class Config:
         from_attributes = True
+
+
+def contract_to_response(contract: Contract) -> dict:
+    """Convert Contract model to response dict with proper type conversions."""
+    return {
+        "id": contract.id,
+        "tenant_id": str(contract.tenant_id),  # UUID to string
+        "supplier_id": contract.supplier_id,
+        "name": contract.name,
+        "reference": contract.reference,
+        "valid_from": contract.valid_from,
+        "valid_to": contract.valid_to,
+        "payment_terms_json": contract.payment_terms_json,
+        "cancellation_terms_json": contract.cancellation_terms_json,
+        "status": contract.status,
+        "notes": contract.notes,
+        "ai_warnings": contract.ai_warnings,
+        "rates": [
+            {
+                "id": r.id,
+                "contract_id": r.contract_id,
+                "service_name": r.service_name,
+                "service_code": r.service_code,
+                "pax_category": r.pax_category,
+                "currency": r.currency,
+                "base_price": float(r.base_price) if r.base_price else 0,
+                "season_name": r.season_name,
+                "season_start_mmdd": r.season_start_mmdd,
+                "season_end_mmdd": r.season_end_mmdd,
+                "day_of_week_mask": r.day_of_week_mask,
+                "min_pax": r.min_pax,
+                "max_pax": r.max_pax,
+            }
+            for r in (contract.rates or [])
+        ],
+    }
 
 
 class ContractListResponse(BaseModel):
@@ -140,7 +178,7 @@ async def list_contracts(
     contracts = result.scalars().unique().all()
 
     return ContractListResponse(
-        items=[ContractResponse.model_validate(c) for c in contracts],
+        items=[contract_to_response(c) for c in contracts],
         total=total,
         page=page,
         page_size=page_size,
@@ -200,7 +238,7 @@ async def create_contract(
     )
     contract = result.scalar_one()
 
-    return ContractResponse.model_validate(contract)
+    return contract_to_response(contract)
 
 
 @router.get("/{contract_id}", response_model=ContractResponse)
@@ -225,7 +263,7 @@ async def get_contract(
             detail="Contract not found",
         )
 
-    return ContractResponse.model_validate(contract)
+    return contract_to_response(contract)
 
 
 @router.patch("/{contract_id}", response_model=ContractResponse)
@@ -260,7 +298,7 @@ async def update_contract(
     await db.commit()
     await db.refresh(contract)
 
-    return ContractResponse.model_validate(contract)
+    return contract_to_response(contract)
 
 
 @router.post("/{contract_id}/activate", response_model=ContractResponse)
@@ -293,7 +331,42 @@ async def activate_contract(
     await db.commit()
     await db.refresh(contract)
 
-    return ContractResponse.model_validate(contract)
+    return contract_to_response(contract)
+
+
+@router.delete("/{contract_id}")
+async def delete_contract(
+    contract_id: int,
+    db: DbSession,
+    tenant: CurrentTenant,
+    user: CurrentUser,
+):
+    """
+    Delete a contract and all its rates.
+    """
+    result = await db.execute(
+        select(Contract)
+        .where(Contract.id == contract_id, Contract.tenant_id == tenant.id)
+    )
+    contract = result.scalar_one_or_none()
+
+    if not contract:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Contract not found",
+        )
+
+    # Delete associated rates first
+    from sqlalchemy import delete as sql_delete
+    await db.execute(
+        sql_delete(ContractRate).where(ContractRate.contract_id == contract_id)
+    )
+
+    # Delete the contract
+    await db.delete(contract)
+    await db.commit()
+
+    return {"message": "Contract deleted successfully"}
 
 
 # Import needed

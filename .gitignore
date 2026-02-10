@@ -35,3 +35,8 @@ build/
 # Misc
 .DS_Store
 *.log
+
+# Google Cloud credentials
+credentials/
+*-credentials.json
+*-service-account.json

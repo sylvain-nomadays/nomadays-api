@@ -267,6 +267,7 @@ async def translate_circuit(
             tenant_id=tenant.id,
             trip_id=new_trip.id,
             day_number=day_data["day_number"],
+            day_number_end=day_data.get("day_number_end"),
             title=day_data.get("title"),
             description=day_data.get("description"),
             location_from=day_data.get("location_from"),

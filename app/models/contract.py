@@ -5,8 +5,10 @@ Contract and ContractRate models - supplier agreements with pricing.
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional, List, TYPE_CHECKING
+import uuid
 
 from sqlalchemy import BigInteger, String, Date, DateTime, Boolean, DECIMAL, JSON, ForeignKey, Enum as SQLEnum
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import TenantBase
@@ -50,6 +52,10 @@ class Contract(TenantBase):
     )
     cancellation_terms_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
+    # Notes and warnings extracted by AI
+    notes: Mapped[Optional[str]] = mapped_column(String(2000), nullable=True)  # Manual notes
+    ai_warnings: Mapped[Optional[List[str]]] = mapped_column(JSON, nullable=True, default=list)  # AI-extracted warnings
+
     # Status
     status: Mapped[str] = mapped_column(
         SQLEnum(
@@ -69,8 +75,8 @@ class Contract(TenantBase):
 
     # Human validation
     human_validated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    validated_by_id: Mapped[Optional[int]] = mapped_column(
-        BigInteger,
+    validated_by_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )

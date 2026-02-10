@@ -14,6 +14,7 @@ from jose import JWTError, jwt, jwk
 from jose.utils import base64url_decode
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from app.config import get_settings
 from app.database import get_db

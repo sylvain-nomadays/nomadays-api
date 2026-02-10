@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from app.models.user import User
     from app.models.supplier import Supplier
     from app.models.dossier import Dossier
+    from app.models.accommodation import Accommodation
 
 
 class Tenant(Base, TimestampMixin):
@@ -52,10 +53,11 @@ class Tenant(Base, TimestampMixin):
     # Status
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=True)
 
-    # Relationships
-    users: Mapped[List["User"]] = relationship("User", back_populates="tenant")
-    suppliers: Mapped[List["Supplier"]] = relationship("Supplier", back_populates="tenant")
-    dossiers: Mapped[List["Dossier"]] = relationship("Dossier", back_populates="tenant")
+    # Relationships - use lazy="raise" to prevent accidental lazy loading in async context
+    users: Mapped[List["User"]] = relationship("User", back_populates="tenant", lazy="raise")
+    suppliers: Mapped[List["Supplier"]] = relationship("Supplier", back_populates="tenant", lazy="raise")
+    dossiers: Mapped[List["Dossier"]] = relationship("Dossier", back_populates="tenant", lazy="raise")
+    accommodations: Mapped[List["Accommodation"]] = relationship("Accommodation", back_populates="tenant", lazy="raise")
 
     def __repr__(self) -> str:
         return f"<Tenant(id={self.id}, name='{self.name}', slug='{self.slug}')>"
