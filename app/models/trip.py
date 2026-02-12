@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from app.models.location import Location
     from app.models.formula import Formula
     from app.models.condition import Condition, ConditionOption, TripCondition
+    from app.models.cotation import TripCotation
 
 
 # Many-to-many junction table for Trip <-> TravelTheme
@@ -123,6 +124,10 @@ class Trip(TenantBase):
     # Legacy field (kept for backward compatibility)
     operator_commission_pct: Mapped[Decimal] = mapped_column(DECIMAL(5, 2), default=Decimal("0.00"))
 
+    # Default room demand for the trip
+    # e.g. [{"bed_type": "DBL", "qty": 2}, {"bed_type": "TWN", "qty": 1}]
+    room_demand_json: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+
     # Currency exchange rates
     currency_rates_json: Mapped[Optional[dict]] = mapped_column(JSON, default=dict)
     exchange_rate_mode: Mapped[str] = mapped_column(
@@ -132,23 +137,35 @@ class Trip(TenantBase):
 
     # Presentation fields
     description_short: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    description_html: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Rich text (Tiptap HTML)
     description_tone: Mapped[Optional[str]] = mapped_column(
         SQLEnum("marketing_emotionnel", "aventure", "familial", "factuel", name="description_tone_enum"),
         default="factuel",
         nullable=True,
     )
+    slug: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)  # B2C URL slug
     highlights: Mapped[Optional[list]] = mapped_column(JSONB, default=list)  # [{title: str, icon?: str}]
 
     # Inclusions / Exclusions
     inclusions: Mapped[Optional[list]] = mapped_column(JSONB, default=list)  # [{text: str, is_default?: bool}]
     exclusions: Mapped[Optional[list]] = mapped_column(JSONB, default=list)  # [{text: str, is_default?: bool}]
 
-    # Information fields
+    # Information fields (plain text — kept for backward compat)
     info_general: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     info_formalities: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     info_booking_conditions: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     info_cancellation_policy: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     info_additional: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Information fields — rich text HTML (Tiptap)
+    info_general_html: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    info_formalities_html: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    info_booking_conditions_html: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    info_cancellation_policy_html: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    info_additional_html: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Roadbook (client-facing enriched itinerary)
+    roadbook_intro_html: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Map configuration
     map_config: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
@@ -189,6 +206,11 @@ class Trip(TenantBase):
         default="draft",
     )
 
+    # Publication tracking
+    sent_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Versioning
     version: Mapped[int] = mapped_column(Integer, default=1)
 
@@ -220,7 +242,9 @@ class Trip(TenantBase):
         foreign_keys="Trip.master_trip_id",
         back_populates="master_trip",
     )
-    dossier: Mapped[Optional["Dossier"]] = relationship("Dossier", back_populates="trips")
+    dossier: Mapped[Optional["Dossier"]] = relationship(
+        "Dossier", back_populates="trips", foreign_keys=[dossier_id]
+    )
     created_by: Mapped[Optional["User"]] = relationship("User", foreign_keys=[created_by_id])
     assigned_to: Mapped[Optional["User"]] = relationship("User", foreign_keys=[assigned_to_id])
     days: Mapped[List["TripDay"]] = relationship(
@@ -281,6 +305,13 @@ class Trip(TenantBase):
         cascade="all, delete-orphan",
         order_by="TripPhoto.sort_order",
     )
+    # Cotation profiles (named pricing scenarios)
+    cotations: Mapped[List["TripCotation"]] = relationship(
+        "TripCotation",
+        back_populates="trip",
+        cascade="all, delete-orphan",
+        order_by="TripCotation.sort_order",
+    )
 
     def __repr__(self) -> str:
         return f"<Trip(id={self.id}, name='{self.name}', type='{self.type}')>"
@@ -321,6 +352,9 @@ class TripDay(TenantBase):
     title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     description: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
 
+    # Roadbook annotation (client-facing per-day notes: meeting points, advice, tips)
+    roadbook_html: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # Locations (text fields for display)
     location_from: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     location_to: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
@@ -332,6 +366,11 @@ class TripDay(TenantBase):
         nullable=True,
         index=True,
     )
+
+    # Template metadata (for day templates)
+    is_template: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    template_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    template_tags: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
 
     # Ordering
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
@@ -410,3 +449,4 @@ from app.models.formula import Formula
 from app.models.condition import Condition, ConditionOption, TripCondition
 from app.models.trip_translation_cache import TripTranslationCache
 from app.models.trip_photo import TripPhoto
+from app.models.cotation import TripCotation

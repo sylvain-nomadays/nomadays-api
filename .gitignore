@@ -40,3 +40,7 @@ build/
 credentials/
 *-credentials.json
 *-service-account.json
+
+# Build artifacts
+.next/
+database.db

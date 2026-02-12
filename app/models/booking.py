@@ -1,12 +1,15 @@
 """
 Booking and PaymentSchedule models - generated after trip confirmation.
+Also supports pre-bookings (reservations requested before confirmation).
 """
 
-from datetime import date
+import uuid
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional, TYPE_CHECKING
 
-from sqlalchemy import BigInteger, String, Date, Boolean, DECIMAL, ForeignKey, Enum as SQLEnum
+from sqlalchemy import BigInteger, String, Date, DateTime, Integer, Boolean, DECIMAL, Text, ForeignKey, Enum as SQLEnum
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import TenantBase
@@ -16,6 +19,8 @@ if TYPE_CHECKING:
     from app.models.item import Item
     from app.models.supplier import Supplier
     from app.models.cost_nature import CostNature
+    from app.models.formula import Formula
+    from app.models.user import User
 
 
 class Booking(TenantBase):
@@ -72,6 +77,8 @@ class Booking(TenantBase):
             "confirmed",
             "modified",
             "cancelled",
+            "declined",
+            "pending_cancellation",
             name="booking_status_enum"
         ),
         default="pending",
@@ -80,11 +87,52 @@ class Booking(TenantBase):
     # Supplier confirmation
     confirmation_ref: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
+    # ── Pre-booking fields ───────────────────────────────────────────────
+    is_pre_booking: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Who requested and who is handling
+    requested_by_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    assigned_to_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # Email tracking
+    email_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    email_sent_to: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+    # Supplier response
+    supplier_response_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Link to source formula (block in circuit)
+    formula_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        ForeignKey("formulas.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # Pax info at request time
+    pax_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    room_config: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    guest_names: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # Relationships
     trip: Mapped["Trip"] = relationship("Trip")
     item: Mapped[Optional["Item"]] = relationship("Item")
     supplier: Mapped[Optional["Supplier"]] = relationship("Supplier")
     cost_nature: Mapped["CostNature"] = relationship("CostNature")
+    formula: Mapped[Optional["Formula"]] = relationship("Formula")
+    requested_by: Mapped[Optional["User"]] = relationship(
+        "User", foreign_keys=[requested_by_id]
+    )
+    assigned_to: Mapped[Optional["User"]] = relationship(
+        "User", foreign_keys=[assigned_to_id]
+    )
 
     def __repr__(self) -> str:
         return f"<Booking(id={self.id}, description='{self.description}', status='{self.status}')>"
@@ -152,3 +200,5 @@ from app.models.trip import Trip
 from app.models.item import Item
 from app.models.supplier import Supplier
 from app.models.cost_nature import CostNature
+from app.models.formula import Formula
+from app.models.user import User

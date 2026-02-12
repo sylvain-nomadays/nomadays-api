@@ -12,6 +12,7 @@ from app.models.payment_terms import PaymentTerms
 from app.models.location import Location
 from app.models.accommodation import Accommodation, RoomCategory, AccommodationSeason, RoomRate
 from app.models.accommodation_photo import AccommodationPhoto
+from app.models.location_photo import LocationPhoto
 from app.models.contract import Contract, ContractRate
 from app.models.rate_catalog import RateCatalog
 from app.models.dossier import Dossier
@@ -27,7 +28,11 @@ from app.models.formula import Formula
 from app.models.condition import Condition, ConditionOption, TripCondition
 from app.models.pax_category import PaxCategory
 from app.models.item import Item, ItemSeason, ItemPriceTier
+from app.models.cotation import TripCotation
 from app.models.booking import Booking, PaymentSchedule
+from app.models.invoice import Invoice, InvoiceLine, InvoiceVatDetail, InvoiceNumberSequence, InvoicePaymentLink
+from app.models.trip_insurance import TripInsurance
+from app.models.forex_hedge import ForexHedge
 from app.models.alert import AIAlert
 from app.models.audit import AuditLog
 from app.models.content import (
@@ -58,6 +63,7 @@ __all__ = [
     "AccommodationSeason",
     "RoomRate",
     "AccommodationPhoto",
+    "LocationPhoto",
     "Contract",
     "ContractRate",
     "RateCatalog",
@@ -82,8 +88,17 @@ __all__ = [
     "Item",
     "ItemSeason",
     "ItemPriceTier",
+    "TripCotation",
     "Booking",
     "PaymentSchedule",
+    # Invoicing
+    "Invoice",
+    "InvoiceLine",
+    "InvoiceVatDetail",
+    "InvoiceNumberSequence",
+    "InvoicePaymentLink",
+    "TripInsurance",
+    "ForexHedge",
     "AIAlert",
     "AuditLog",
     # Content Article system

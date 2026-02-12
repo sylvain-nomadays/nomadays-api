@@ -43,6 +43,15 @@ from app.api import (
     conditions,
     trip_conditions,
     pax_categories,
+    cotations,
+    country_vat_rates,
+    formula_templates,
+    day_templates,
+    bookings,
+    notifications,
+    invoices,
+    insurances,
+    forex_hedges,
 )
 
 settings = get_settings()
@@ -95,6 +104,7 @@ app.include_router(accommodation_import.router)  # /accommodations/import endpoi
 app.include_router(contracts.router, prefix="/contracts", tags=["Contracts"])
 app.include_router(trips.router, prefix="/trips", tags=["Trips"])
 app.include_router(quotation.router, prefix="/quotation", tags=["Quotation Engine"])
+app.include_router(cotations.router, prefix="/cotations", tags=["Cotations"])
 app.include_router(alerts.router, prefix="/alerts", tags=["AI Alerts"])
 app.include_router(dashboard.router, prefix="/dashboard", tags=["Dashboard"])
 app.include_router(formulas.router, prefix="/trip-structure", tags=["Formulas & Items"])
@@ -119,6 +129,14 @@ app.include_router(content.router, prefix="/content", tags=["Content Articles"])
 app.include_router(content_import.router)  # Content import from URL with AI
 app.include_router(cost_natures.router, prefix="/cost-natures", tags=["Cost Natures"])
 app.include_router(pax_categories.router, prefix="/pax-categories", tags=["PAX Categories"])
+app.include_router(country_vat_rates.router, prefix="/country-vat-rates", tags=["VAT Rates"])
+app.include_router(formula_templates.router)  # /formula-templates endpoints
+app.include_router(day_templates.router)  # /day-templates endpoints
+app.include_router(bookings.router, prefix="/bookings", tags=["Bookings"])
+app.include_router(notifications.router, prefix="/notifications", tags=["Notifications"])
+app.include_router(invoices.router, prefix="/invoices", tags=["Invoices"])
+app.include_router(insurances.router, prefix="/insurances", tags=["Trip Insurances"])
+app.include_router(forex_hedges.router, prefix="/forex-hedges", tags=["Forex Hedges"])
 
 
 @app.get("/", tags=["Health"])

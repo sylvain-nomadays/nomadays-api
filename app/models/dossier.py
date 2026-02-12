@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from app.models.tenant import Tenant
     from app.models.trip import Trip
     from app.models.partner_agency import PartnerAgency
+    from app.models.invoice import Invoice
 
 
 # Dossier status enum
@@ -27,6 +28,8 @@ DOSSIER_STATUS_ENUM = SQLEnum(
     "quote_in_progress",
     "quote_sent",
     "negotiation",
+    "non_reactive",
+    "option",
     "confirmed",
     "deposit_paid",
     "fully_paid",
@@ -126,6 +129,27 @@ class Dossier(Base, TimestampMixin):
         nullable=True,
     )
 
+    # Trip selection (set when a trip proposal is confirmed)
+    selected_trip_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        ForeignKey("trips.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    selected_cotation_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, nullable=True
+    )
+    selected_cotation_name: Mapped[Optional[str]] = mapped_column(
+        String(100), nullable=True
+    )
+    final_pax_count: Mapped[Optional[int]] = mapped_column(nullable=True)
+    status_before_selection: Mapped[Optional[str]] = mapped_column(
+        String(50), nullable=True
+    )
+    selected_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Last activity tracking
     last_activity_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
@@ -145,10 +169,20 @@ class Dossier(Base, TimestampMixin):
         "Trip",
         back_populates="dossier",
         cascade="all, delete-orphan",
+        foreign_keys="[Trip.dossier_id]",
+    )
+    selected_trip: Mapped[Optional["Trip"]] = relationship(
+        "Trip",
+        foreign_keys=[selected_trip_id],
+        uselist=False,
     )
     partner_agency: Mapped[Optional["PartnerAgency"]] = relationship(
         "PartnerAgency",
         back_populates="dossiers",
+    )
+    invoices: Mapped[List["Invoice"]] = relationship(
+        "Invoice",
+        back_populates="dossier",
     )
 
     def __repr__(self) -> str:

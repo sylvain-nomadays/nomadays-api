@@ -47,6 +47,14 @@ class CountryVatRate(TenantBase):
         nullable=True,
     )
 
+    # VAT calculation mode (on_margin = TVA sur la marge, on_selling_price = TVA sur PV)
+    vat_calculation_mode: Mapped[str] = mapped_column(
+        String(20),
+        default="on_margin",
+        server_default="on_margin",
+        nullable=False,
+    )
+
     # Status
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 

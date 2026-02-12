@@ -6,6 +6,7 @@ Formulas group items within a trip day or at trip level (transversal).
 from typing import Optional, List, TYPE_CHECKING
 
 from sqlalchemy import BigInteger, String, Integer, Boolean, Text, ForeignKey
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import TenantBase
@@ -14,6 +15,7 @@ if TYPE_CHECKING:
     from app.models.trip import TripDay, Trip
     from app.models.item import Item
     from app.models.condition import Condition
+    from app.models.location import Location
 
 
 class Formula(TenantBase):
@@ -61,6 +63,18 @@ class Formula(TenantBase):
         ForeignKey("formulas.id", ondelete="SET NULL"),
         nullable=True,
     )
+
+    # Template versioning & metadata (used when is_template=True or when linked to a template)
+    template_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    template_source_version: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    template_category: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    template_tags: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    template_location_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        ForeignKey("locations.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    template_country_code: Mapped[Optional[str]] = mapped_column(String(2), nullable=True)
 
     # Ordering
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
@@ -123,6 +137,11 @@ class Formula(TenantBase):
         order_by="Item.sort_order",
     )
     condition: Mapped[Optional["Condition"]] = relationship("Condition")
+    template_location: Mapped[Optional["Location"]] = relationship(
+        "Location",
+        foreign_keys=[template_location_id],
+        lazy="noload",
+    )
 
     def __repr__(self) -> str:
         return f"<Formula(id={self.id}, name='{self.name}')>"
@@ -139,3 +158,4 @@ class Formula(TenantBase):
 from app.models.trip import TripDay, Trip
 from app.models.item import Item
 from app.models.condition import Condition
+from app.models.location import Location

@@ -6,10 +6,10 @@ NOTE: This model maps to the existing 'tenants' table with UUID ids.
 
 import uuid
 from decimal import Decimal
-from typing import Optional, List, TYPE_CHECKING
+from typing import Optional, List, TYPE_CHECKING, Any
 
 from sqlalchemy import String, Boolean, DECIMAL, JSON, Enum as SQLEnum, Text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -49,6 +49,15 @@ class Tenant(Base, TimestampMixin):
     legal_name: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     logo_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     settings: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+    # VAT configuration (for invoicing)
+    vat_regime: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # 'exempt' | 'margin'
+    vat_rate: Mapped[Optional[Decimal]] = mapped_column(DECIMAL(5, 2), nullable=True)  # 0 or 20.00
+    vat_legal_mention: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    invoice_sender_info: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+
+    # Réforme e-facture 2026
+    siren: Mapped[Optional[str]] = mapped_column(String(9), nullable=True)  # 9 chiffres — obligatoire émetteur
 
     # Status
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=True)

@@ -80,6 +80,9 @@ class Supplier(TenantBase):
     # Status
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    # Pre-booking requirement (supplier must be reserved before trip confirmation)
+    requires_pre_booking: Mapped[bool] = mapped_column(Boolean, default=False)
+
     # Contract workflow status (user-managed workflow state)
     # - needs_contract: Default, needs a contract to be requested
     # - contract_requested: Logistics has requested contract from supplier

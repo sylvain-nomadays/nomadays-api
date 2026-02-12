@@ -13,6 +13,7 @@ from app.models.base import TenantBase
 
 if TYPE_CHECKING:
     from app.models.accommodation import Accommodation
+    from app.models.location_photo import LocationPhoto
 
 
 class Location(TenantBase):
@@ -83,6 +84,13 @@ class Location(TenantBase):
         "Accommodation",
         back_populates="location",
         lazy="raise",
+    )
+    photos: Mapped[List["LocationPhoto"]] = relationship(
+        "LocationPhoto",
+        back_populates="location",
+        lazy="raise",
+        cascade="all, delete-orphan",
+        order_by="LocationPhoto.sort_order",
     )
 
     def __repr__(self) -> str:

@@ -113,6 +113,12 @@ class Item(TenantBase):
     # NULL = use ratio_categories (retrocompatible). Comma-separated codes.
     tier_categories: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
+    # Per-category absolute prices (optional)
+    # e.g. {"adult": 2500, "teen": 1800, "child": 900, "guide": 0}
+    # When set, overrides unit_cost for each category individually.
+    # NULL = use single unit_cost for all (current behavior).
+    category_prices_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
     # Override tracking
     is_override: Mapped[bool] = mapped_column(Boolean, default=False)
     override_reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
@@ -226,6 +232,11 @@ class ItemPriceTier(TenantBase):
     # Category-specific % adjustments (optional)
     # e.g. {"child": -10, "baby": -100} → -10% for children, free for babies
     category_adjustments_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+    # Per-category absolute prices (optional, overrides % adjustments)
+    # e.g. {"adult": 2500, "teen": 1800}
+    # When set, takes priority over category_adjustments_json.
+    category_prices_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     # Display order
     sort_order: Mapped[int] = mapped_column(Integer, default=0)

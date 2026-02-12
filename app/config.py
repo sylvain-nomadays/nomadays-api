@@ -55,10 +55,18 @@ class Settings(BaseSettings):
     # Anthropic Claude
     anthropic_api_key: str = ""
 
+    # Google Maps
+    google_maps_api_key: str = ""
+
     # Google Cloud (Vertex AI — Imagen 3)
     google_application_credentials: str = ""
     google_cloud_project: str = ""
     google_cloud_location: str = "us-central1"
+
+    # SendGrid email
+    sendgrid_api_key: str = ""
+    sendgrid_from_email: str = "noreply@nomadays.com"
+    sendgrid_from_name: str = "Nomadays"
 
     @field_validator("cors_origins", mode="before")
     @classmethod
