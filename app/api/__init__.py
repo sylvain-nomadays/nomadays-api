@@ -27,6 +27,8 @@ from app.api import (
     cost_natures,
     conditions,
     trip_conditions,
+    cotations,
+    country_vat_rates,
 )
 
 __all__ = [
@@ -54,4 +56,6 @@ __all__ = [
     "cost_natures",
     "conditions",
     "trip_conditions",
+    "cotations",
+    "country_vat_rates",
 ]

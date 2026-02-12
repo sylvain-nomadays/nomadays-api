@@ -11,7 +11,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status, Query, File, UploadFile, Form
 from PIL import Image
 from pydantic import BaseModel, Field
-from sqlalchemy import select, func, update as sql_update
+from sqlalchemy import select, func, update as sql_update, text as sa_text, String as SAString
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -23,6 +23,7 @@ from app.models.trip import Trip, TripDay, TripPaxConfig
 from app.models.trip_photo import TripPhoto
 from app.models.formula import Formula
 from app.models.condition import TripCondition
+from app.models.cotation import TripCotation
 from app.models.item import Item
 from app.services.storage import validate_file, get_mime_type
 from app.services.image_processor import process_image, save_as_avif
@@ -49,6 +50,7 @@ class TripCreate(BaseModel):
     default_currency: str = "EUR"
     margin_pct: float = 30.0
     margin_type: str = "margin"
+    room_demand_json: Optional[list] = None
 
 
 class TripUpdate(BaseModel):
@@ -66,12 +68,27 @@ class TripUpdate(BaseModel):
     margin_pct: Optional[float] = None
     margin_type: Optional[str] = None
     vat_pct: Optional[float] = None
+    vat_calculation_mode: Optional[str] = None
     operator_commission_pct: Optional[float] = None
+    # Commissions
+    primary_commission_pct: Optional[float] = None
+    primary_commission_label: Optional[str] = None
+    secondary_commission_pct: Optional[float] = None
+    secondary_commission_label: Optional[str] = None
+    # Characteristics
+    comfort_level: Optional[int] = None
+    difficulty_level: Optional[int] = None
+    # Exchange rates
     currency_rates_json: Optional[dict] = None
+    room_demand_json: Optional[list] = None
     status: Optional[str] = None
+    # Themes
+    theme_ids: Optional[List[int]] = None
     # Presentation fields
     description_short: Optional[str] = None
+    description_html: Optional[str] = None
     description_tone: Optional[str] = None
+    slug: Optional[str] = None
     highlights: Optional[List[dict]] = None
     inclusions: Optional[List[dict]] = None
     exclusions: Optional[List[dict]] = None
@@ -80,8 +97,25 @@ class TripUpdate(BaseModel):
     info_booking_conditions: Optional[str] = None
     info_cancellation_policy: Optional[str] = None
     info_additional: Optional[str] = None
+    # Rich text HTML versions
+    info_general_html: Optional[str] = None
+    info_formalities_html: Optional[str] = None
+    info_booking_conditions_html: Optional[str] = None
+    info_cancellation_policy_html: Optional[str] = None
+    info_additional_html: Optional[str] = None
+    # Roadbook
+    roadbook_intro_html: Optional[str] = None
     # Language for translation
     language: Optional[str] = None
+
+
+class CotationSummary(BaseModel):
+    """Lightweight cotation summary for list views."""
+    id: int
+    name: str
+    mode: str  # "range" or "custom"
+    tarification_mode: Optional[str] = None  # "range_web", "per_person", etc.
+    price_label: Optional[str] = None  # e.g. "1 250 €/pers" or "4 500 € / groupe"
 
 
 class TripSummaryResponse(BaseModel):
@@ -99,6 +133,10 @@ class TripSummaryResponse(BaseModel):
     duration_days: int
     destination_country: Optional[str]
     locations_summary: List[str] = []
+    # Enriched fields for dossier view
+    hero_photo_url: Optional[str] = None
+    cotations_summary: List[CotationSummary] = []
+    sent_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -189,6 +227,21 @@ class TripResponse(BaseModel):
     vat_pct: float
     operator_commission_pct: float
     currency_rates_json: Optional[dict]
+    room_demand_json: Optional[list] = None
+    # Commissions
+    primary_commission_pct: Optional[float] = None
+    primary_commission_label: Optional[str] = None
+    secondary_commission_pct: Optional[float] = None
+    secondary_commission_label: Optional[str] = None
+    vat_calculation_mode: Optional[str] = None
+    exchange_rate_mode: Optional[str] = None
+    # Characteristics
+    comfort_level: Optional[int] = None
+    difficulty_level: Optional[int] = None
+    # Dossier
+    dossier_id: Optional[UUID] = None
+    # Multi-destination
+    destination_countries: Optional[List[str]] = None
     status: str
     version: int
     days: List[TripDayResponse] = []
@@ -196,7 +249,9 @@ class TripResponse(BaseModel):
     formulas: List[dict] = []
     # Presentation fields
     description_short: Optional[str] = None
+    description_html: Optional[str] = None
     description_tone: Optional[str] = None
+    slug: Optional[str] = None
     highlights: Optional[List[dict]] = None
     inclusions: Optional[List[dict]] = None
     exclusions: Optional[List[dict]] = None
@@ -205,11 +260,21 @@ class TripResponse(BaseModel):
     info_booking_conditions: Optional[str] = None
     info_cancellation_policy: Optional[str] = None
     info_additional: Optional[str] = None
+    # Rich text HTML versions
+    info_general_html: Optional[str] = None
+    info_formalities_html: Optional[str] = None
+    info_booking_conditions_html: Optional[str] = None
+    info_cancellation_policy_html: Optional[str] = None
+    info_additional_html: Optional[str] = None
+    # Roadbook
+    roadbook_intro_html: Optional[str] = None
     # Language
     language: Optional[str] = None
     # Source tracking
     source_url: Optional[str] = None
     source_trip_id: Optional[int] = None  # For translated circuits
+    # Publication
+    sent_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -222,6 +287,63 @@ class TripListResponse(BaseModel):
     page_size: int
 
 
+# Helpers
+
+CURRENCY_SYMBOLS = {"EUR": "€", "USD": "$", "THB": "฿", "VND": "₫", "GBP": "£", "CHF": "CHF"}
+
+
+def _build_price_label(
+    tarif_mode: Optional[str],
+    entries: list,
+    currency: str = "EUR",
+) -> Optional[str]:
+    """Build a human-readable price label from tarification entries."""
+    if not tarif_mode or not entries:
+        return None
+
+    sym = CURRENCY_SYMBOLS.get(currency, currency)
+
+    try:
+        if tarif_mode == "range_web":
+            # Show the range: "1 250 - 1 550 €/pers" or single "1 250 €/pers"
+            prices = [e.get("selling_price", 0) for e in entries if e.get("selling_price")]
+            if not prices:
+                return None
+            min_p = min(prices)
+            max_p = max(prices)
+            if min_p == max_p:
+                return f"{int(min_p):,} {sym}/pers".replace(",", " ")
+            return f"{int(min_p):,} - {int(max_p):,} {sym}/pers".replace(",", " ")
+
+        elif tarif_mode == "per_person":
+            # "1 250 €/pers"
+            entry = entries[0] if entries else {}
+            pp = entry.get("price_per_person") or entry.get("selling_price", 0)
+            if not pp:
+                return None
+            return f"{int(pp):,} {sym}/pers".replace(",", " ")
+
+        elif tarif_mode == "per_group":
+            # "4 500 € / groupe"
+            entry = entries[0] if entries else {}
+            gp = entry.get("group_price") or entry.get("selling_price", 0)
+            if not gp:
+                return None
+            return f"{int(gp):,} {sym} / groupe".replace(",", " ")
+
+        elif tarif_mode in ("service_list", "enumeration"):
+            # Sum of all entries selling prices
+            total = sum(e.get("selling_price", 0) for e in entries)
+            if not total:
+                return None
+            return f"{int(total):,} {sym}".replace(",", " ")
+
+    except (ValueError, TypeError):
+        return None
+
+    return None
+
+
 # Endpoints
 @router.get("", response_model=TripListResponse)
 async def list_trips(
@@ -232,6 +354,7 @@ async def list_trips(
     type: Optional[str] = None,
     status: Optional[str] = None,
     search: Optional[str] = None,
+    dossier_id: Optional[str] = None,
 ):
     """
     List trips for the current tenant.
@@ -243,6 +366,8 @@ async def list_trips(
         query = query.where(Trip.type == type)
     if status:
         query = query.where(Trip.status == status)
+    if dossier_id:
+        query = query.where(Trip.dossier_id == dossier_id)
     if search:
         query = query.where(
             Trip.name.ilike(f"%{search}%") | Trip.client_name.ilike(f"%{search}%")
@@ -256,23 +381,25 @@ async def list_trips(
     query = query.offset((page - 1) * page_size).limit(page_size)
     query = query.order_by(Trip.updated_at.desc())
 
-    # Eager-load days with their location relation for locations_summary
+    # Eager-load days (locations), photos (hero only), cotations (tarification)
     query = query.options(
         selectinload(Trip.days).selectinload(TripDay.location),
+        selectinload(Trip.photos),
+        selectinload(Trip.cotations),
     )
 
     result = await db.execute(query)
     trips = result.scalars().all()
 
-    # Build summary with locations
+    # Build summary with locations, hero photo, and cotations
     items = []
     for trip in trips:
         summary = TripSummaryResponse.model_validate(trip)
+
         # Extract unique location names from days
         locations: list[str] = []
         if trip.days:
             for day in sorted(trip.days, key=lambda d: d.sort_order or d.day_number):
-                # Prefer location FK name, fallback to text fields
                 name = None
                 if day.location and day.location.name:
                     name = day.location.name
@@ -280,10 +407,35 @@ async def list_trips(
                     name = day.location_from
                 if name and name not in locations:
                     locations.append(name)
-                # Also check location_to
                 if day.location_to and day.location_to not in locations:
                     locations.append(day.location_to)
-        summary.locations_summary = locations[:8]  # Max 8 locations
+        summary.locations_summary = locations[:8]
+
+        # Hero photo: pick the is_hero photo, prefer url_medium for thumbnail
+        if trip.photos:
+            hero = next((p for p in trip.photos if p.is_hero), None)
+            if not hero:
+                # Fallback to first photo
+                hero = trip.photos[0] if trip.photos else None
+            if hero:
+                summary.hero_photo_url = hero.url_medium or hero.url_large or hero.url or None
+
+        # Cotations summary: extract name + tarification mode + price label
+        if trip.cotations:
+            cot_summaries = []
+            for cot in sorted(trip.cotations, key=lambda c: c.sort_order or 0):
+                tarif = cot.tarification_json or {}
+                tarif_mode = tarif.get("mode") if tarif else None
+                price_label = _build_price_label(tarif_mode, tarif.get("entries", []), trip.default_currency)
+                cot_summaries.append(CotationSummary(
+                    id=cot.id,
+                    name=cot.name,
+                    mode=cot.mode,
+                    tarification_mode=tarif_mode,
+                    price_label=price_label,
+                ))
+            summary.cotations_summary = cot_summaries
+
         items.append(summary)
 
     return TripListResponse(
@@ -378,6 +530,7 @@ async def update_trip(
         .options(
             selectinload(Trip.days),
             selectinload(Trip.pax_configs),
+            selectinload(Trip.themes),
         )
     )
     trip = result.scalar_one_or_none()
@@ -389,6 +542,16 @@ async def update_trip(
         )
 
     update_data = data.model_dump(exclude_unset=True)
+
+    # Handle theme_ids separately (M2M relationship)
+    theme_ids = update_data.pop("theme_ids", None)
+    if theme_ids is not None:
+        from app.models.travel_theme import TravelTheme
+        theme_result = await db.execute(
+            select(TravelTheme).where(TravelTheme.id.in_(theme_ids))
+        )
+        trip.themes = list(theme_result.scalars().all())
+
     for field, value in update_data.items():
         setattr(trip, field, value)
 
@@ -431,6 +594,7 @@ async def duplicate_trip(
     user: CurrentUser,
     new_name: Optional[str] = None,
     as_type: Optional[str] = None,
+    dossier_id: Optional[str] = None,
 ):
     """
     Duplicate a trip with all its structure.
@@ -448,28 +612,86 @@ async def duplicate_trip(
             detail="Trip not found",
         )
 
-    # Create new trip
+    # Fetch dossier data if linking to a dossier (for dates, pax, duration)
+    dossier = None
+    if dossier_id:
+        from app.models.dossier import Dossier
+        dossier_result = await db.execute(
+            select(Dossier).where(
+                Dossier.id == dossier_id,
+                Dossier.tenant_id == tenant.id,
+            )
+        )
+        dossier = dossier_result.scalar_one_or_none()
+
+    # Compute dates and duration from dossier if available
+    effective_start = (dossier.departure_date_from if dossier else None) or source_trip.start_date
+    effective_end = (dossier.departure_date_to if dossier else None) or source_trip.end_date
+
+    if dossier and dossier.departure_date_from and dossier.departure_date_to:
+        effective_duration = (dossier.departure_date_to - dossier.departure_date_from).days + 1
+    else:
+        effective_duration = source_trip.duration_days
+
+    # Create new trip with ALL fields (including presentation)
     new_trip = Trip(
         tenant_id=tenant.id,
         name=new_name or f"{source_trip.name} (copie)",
         type=as_type or source_trip.type,
         template_id=source_trip.id if as_type == "client" else source_trip.template_id,
-        duration_days=source_trip.duration_days,
+        dossier_id=dossier_id or source_trip.dossier_id,
+        # Dates & duration (from dossier if available)
+        start_date=effective_start,
+        end_date=effective_end,
+        duration_days=effective_duration,
+        # Core fields
         destination_country=source_trip.destination_country,
+        destination_countries=source_trip.destination_countries,
         default_currency=source_trip.default_currency,
         margin_pct=source_trip.margin_pct,
         margin_type=source_trip.margin_type,
         vat_pct=source_trip.vat_pct,
         operator_commission_pct=source_trip.operator_commission_pct,
         currency_rates_json=source_trip.currency_rates_json,
+        roadbook_intro_html=source_trip.roadbook_intro_html,
+        # Presentation fields
+        description_short=source_trip.description_short,
+        description_html=source_trip.description_html,
+        description_tone=source_trip.description_tone,
+        highlights=source_trip.highlights,
+        inclusions=source_trip.inclusions,
+        exclusions=source_trip.exclusions,
+        info_general=source_trip.info_general,
+        info_formalities=source_trip.info_formalities,
+        info_booking_conditions=source_trip.info_booking_conditions,
+        info_cancellation_policy=source_trip.info_cancellation_policy,
+        info_additional=source_trip.info_additional,
+        info_general_html=source_trip.info_general_html,
+        info_formalities_html=source_trip.info_formalities_html,
+        info_booking_conditions_html=source_trip.info_booking_conditions_html,
+        info_cancellation_policy_html=source_trip.info_cancellation_policy_html,
+        info_additional_html=source_trip.info_additional_html,
+        comfort_level=source_trip.comfort_level,
+        difficulty_level=source_trip.difficulty_level,
+        map_config=source_trip.map_config,
+        # Commission & TVA
+        primary_commission_pct=source_trip.primary_commission_pct,
+        primary_commission_label=source_trip.primary_commission_label,
+        secondary_commission_pct=source_trip.secondary_commission_pct,
+        secondary_commission_label=source_trip.secondary_commission_label,
+        vat_calculation_mode=source_trip.vat_calculation_mode,
+        room_demand_json=source_trip.room_demand_json,
+        exchange_rate_mode=source_trip.exchange_rate_mode,
+        language=source_trip.language,
+        # Do NOT copy: slug (unique), is_distributable, distribution_channels, source_url
         status="draft",
         created_by_id=user.id,
     )
     db.add(new_trip)
     await db.flush()
 
-    # Copy structure
-    await _copy_trip_structure(db, tenant.id, trip_id, new_trip.id)
+    # Copy structure (pass dossier for pax config generation)
+    await _copy_trip_structure(db, tenant.id, trip_id, new_trip.id, dossier=dossier)
 
     await db.commit()
 
@@ -492,9 +714,11 @@ async def _copy_trip_structure(
     tenant_id: int,
     source_trip_id: int,
     target_trip_id: int,
+    dossier=None,
 ):
     """
-    Copy days, formulas, and items from source to target trip.
+    Copy days, formulas, items, photos, and pax configs from source to target trip.
+    If dossier is provided, generate pax configs from dossier composition instead of copying source.
     """
     # Get source structure (eager load formulas with children and items)
     result = await db.execute(
@@ -529,6 +753,7 @@ async def _copy_trip_structure(
         db.add(new_tc)
 
     # Copy days with 2-pass formula copy (parents first, then children)
+    day_id_map = {}  # source_day_id -> new_day_id (used for photo copy)
     for source_day in source_days:
         new_day = TripDay(
             tenant_id=tenant_id,
@@ -541,9 +766,11 @@ async def _copy_trip_structure(
             location_to=source_day.location_to,
             location_id=source_day.location_id,
             sort_order=source_day.sort_order,
+            roadbook_html=source_day.roadbook_html,
         )
         db.add(new_day)
         await db.flush()
+        day_id_map[source_day.id] = new_day.id
 
         # Pass 1: Copy top-level blocks (parent_block_id is NULL)
         block_id_map = {}  # old_id -> new_id
@@ -641,17 +868,87 @@ async def _copy_trip_structure(
                 )
                 db.add(new_item)
 
-    # Copy pax configs
-    for source_config in source_pax_configs:
-        new_config = TripPaxConfig(
+    # Copy or generate pax configs
+    if dossier and (dossier.pax_adults or dossier.pax_children):
+        # Generate pax config from dossier composition
+        from app.services.pax_generator import generate_custom_config
+        configs = generate_custom_config(
+            adult=dossier.pax_adults or 0,
+            child=dossier.pax_children or 0,
+            baby=dossier.pax_infants or 0,
+        )
+        for config in configs:
+            db.add(TripPaxConfig(
+                tenant_id=tenant_id,
+                trip_id=target_trip_id,
+                label=config["label"],
+                total_pax=config["total_pax"],
+                args_json=config,
+            ))
+    else:
+        # Copy source pax configs as-is
+        for source_config in source_pax_configs:
+            db.add(TripPaxConfig(
+                tenant_id=tenant_id,
+                trip_id=target_trip_id,
+                label=source_config.label,
+                total_pax=source_config.total_pax,
+                args_json=source_config.args_json,
+                margin_override_pct=source_config.margin_override_pct,
+            ))
+
+    # Copy photos (reuse same storage URLs, no re-upload)
+    result = await db.execute(
+        select(TripPhoto).where(TripPhoto.trip_id == source_trip_id)
+        .order_by(TripPhoto.sort_order)
+    )
+    source_photos = result.scalars().all()
+    for photo in source_photos:
+        new_photo = TripPhoto(
             tenant_id=tenant_id,
             trip_id=target_trip_id,
-            label=source_config.label,
-            total_pax=source_config.total_pax,
-            args_json=source_config.args_json,
-            margin_override_pct=source_config.margin_override_pct,
+            trip_day_id=day_id_map.get(photo.trip_day_id) if photo.trip_day_id else None,
+            day_number=photo.day_number,
+            storage_path=photo.storage_path,
+            url=photo.url,
+            thumbnail_url=photo.thumbnail_url,
+            url_avif=getattr(photo, 'url_avif', None),
+            url_webp=getattr(photo, 'url_webp', None),
+            url_medium=getattr(photo, 'url_medium', None),
+            url_large=getattr(photo, 'url_large', None),
+            url_hero=getattr(photo, 'url_hero', None),
+            srcset_json=getattr(photo, 'srcset_json', None),
+            lqip_data_url=getattr(photo, 'lqip_data_url', None),
+            alt_text=photo.alt_text,
+            alt_text_json=getattr(photo, 'alt_text_json', None),
+            caption_json=getattr(photo, 'caption_json', None),
+            is_hero=photo.is_hero,
+            is_ai_generated=photo.is_ai_generated,
+            is_processed=photo.is_processed,
+            sort_order=photo.sort_order,
+            original_filename=photo.original_filename,
+            file_size=photo.file_size,
+            mime_type=photo.mime_type,
+            width=photo.width,
+            height=photo.height,
         )
-        db.add(new_config)
+        db.add(new_photo)
+
+
+# ============================================================================
+# Helper: auto-sync trip duration from day blocks
+# ============================================================================
+
+async def _sync_trip_duration(db: DbSession, trip_id: int):
+    """Recalculate trip.duration_days from its TripDay blocks."""
+    result = await db.execute(
+        select(func.max(func.coalesce(TripDay.day_number_end, TripDay.day_number)))
+        .where(TripDay.trip_id == trip_id)
+    )
+    max_day = result.scalar() or 1
+    await db.execute(
+        sql_update(Trip).where(Trip.id == trip_id).values(duration_days=max_day)
+    )
 
 
 # ============================================================================
@@ -697,6 +994,8 @@ async def create_trip_day(
         sort_order=day_number,
     )
     db.add(new_day)
+    await db.flush()
+    await _sync_trip_duration(db, trip_id)
     await db.commit()
     await db.refresh(new_day)
 
@@ -739,6 +1038,11 @@ async def update_trip_day(
 
     for field, value in update_data.items():
         setattr(day, field, value)
+
+    # Sync duration if day_number or day_number_end changed
+    if "day_number" in update_data or "day_number_end" in update_data:
+        await db.flush()
+        await _sync_trip_duration(db, trip_id)
 
     await db.commit()
     await db.refresh(day)
@@ -798,6 +1102,8 @@ async def extend_trip_day(
             if d.day_number_end is not None:
                 d.day_number_end += data.delta
 
+    await db.flush()
+    await _sync_trip_duration(db, trip_id)
     await db.commit()
 
     # Refresh and return all days
@@ -857,6 +1163,8 @@ async def reorder_trip_days(
         day.sort_order = current_day_number
         current_day_number += old_span + 1  # Next day starts after this block
 
+    await db.flush()
+    await _sync_trip_duration(db, trip_id)
     await db.commit()
 
     # Return reordered days
@@ -888,6 +1196,8 @@ async def delete_trip_day(
         raise HTTPException(status_code=404, detail="Day not found")
 
     await db.delete(day)
+    await db.flush()
+    await _sync_trip_duration(db, trip_id)
     await db.commit()
 
     logger.info(f"Deleted day {day_id} from trip {trip_id}")
@@ -1431,3 +1741,859 @@ async def regenerate_trip_photo(
     )
 
     return TripPhotoListItem.model_validate(photo)
+
+
+# ============ TEMPLATE SYNC STATUS ============
+
+
+class TemplateSyncItem(BaseModel):
+    formula_id: int
+    formula_name: str
+    block_type: str
+    day_number: Optional[int] = None
+    template_source_id: int
+    source_version: Optional[int] = None
+    template_version: int = 1
+    status: str  # 'in_sync' | 'template_updated'
+
+
+class TripTemplateSyncResponse(BaseModel):
+    trip_id: int
+    total_linked: int = 0
+    out_of_sync: int = 0
+    items: List[TemplateSyncItem] = []
+
+
+@router.get("/{trip_id}/template-sync-status", response_model=TripTemplateSyncResponse)
+async def get_trip_template_sync_status(
+    trip_id: int,
+    db: DbSession,
+    tenant: CurrentTenant,
+    user: CurrentUser,
+):
+    """
+    Get template sync status for all template-linked blocks in a trip.
+
+    Returns a list of all formulas that have a template_source_id, with
+    their sync status (in_sync vs template_updated).
+    """
+    # Verify trip exists
+    result = await db.execute(
+        select(Trip).where(Trip.id == trip_id, Trip.tenant_id == tenant.id)
+    )
+    trip = result.scalar_one_or_none()
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found")
+
+    # Find all formulas in this trip that are linked to templates
+    from app.models.formula import Formula as FormulaModel
+
+    result = await db.execute(
+        select(FormulaModel, TripDay.day_number)
+        .outerjoin(TripDay, FormulaModel.trip_day_id == TripDay.id)
+        .where(
+            TripDay.trip_id == trip_id,
+            FormulaModel.tenant_id == tenant.id,
+            FormulaModel.template_source_id.is_not(None),
+            FormulaModel.is_template == False,  # noqa: E712
+        )
+    )
+    linked_formulas = result.all()
+
+    if not linked_formulas:
+        return TripTemplateSyncResponse(trip_id=trip_id)
+
+    # Get template versions in batch
+    template_ids = list({f.template_source_id for f, _ in linked_formulas})
+    result = await db.execute(
+        select(FormulaModel.id, FormulaModel.template_version)
+        .where(FormulaModel.id.in_(template_ids))
+    )
+    template_versions = {row.id: row.template_version for row in result.all()}
+
+    items = []
+    out_of_sync = 0
+    for formula, day_number in linked_formulas:
+        t_version = template_versions.get(formula.template_source_id, 1)
+        source_version = formula.template_source_version or 0
+        sync_status = "in_sync" if source_version >= t_version else "template_updated"
+        if sync_status == "template_updated":
+            out_of_sync += 1
+
+        items.append(TemplateSyncItem(
+            formula_id=formula.id,
+            formula_name=formula.name,
+            block_type=formula.block_type,
+            day_number=day_number,
+            template_source_id=formula.template_source_id,
+            source_version=source_version,
+            template_version=t_version,
+            status=sync_status,
+        ))
+
+    return TripTemplateSyncResponse(
+        trip_id=trip_id,
+        total_linked=len(items),
+        out_of_sync=out_of_sync,
+        items=items,
+    )
+
+
+# =============================================================================
+# Pre-booking: bookable items + request pre-bookings
+# =============================================================================
+
+class BookableItem(BaseModel):
+    item_id: int
+    item_name: str
+    supplier_id: Optional[int] = None
+    supplier_name: Optional[str] = None
+    supplier_email: Optional[str] = None
+    block_type: Optional[str] = None
+    formula_name: Optional[str] = None
+    formula_id: Optional[int] = None
+    day_number: Optional[int] = None
+    service_date_start: Optional[date] = None
+    service_date_end: Optional[date] = None
+    requires_pre_booking: bool = False
+    already_booked: bool = False
+    booking_status: Optional[str] = None  # pending, sent, confirmed, modified, cancelled
+    booking_requested_at: Optional[datetime] = None
+    booking_requested_by: Optional[str] = None
+    booking_days_waiting: Optional[int] = None  # Days since request was made
+    booking_overdue: bool = False  # True if waiting > 2 business days
+
+
+class PreBookingRequest(BaseModel):
+    item_ids: List[int]
+    pax_count: Optional[int] = None
+    guest_names: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class PreBookingCreated(BaseModel):
+    booking_id: int
+    item_name: str
+    supplier_name: Optional[str] = None
+    status: str
+
+
+@router.get("/{trip_id}/bookable-items", response_model=List[BookableItem])
+async def get_bookable_items(
+    trip_id: int,
+    db: DbSession,
+    user: CurrentUser,
+    tenant: CurrentTenant,
+):
+    """
+    List items in a circuit that can be pre-booked.
+    Includes all items linked to a supplier (with supplier.requires_pre_booking flag).
+    """
+    from app.models.supplier import Supplier
+    from app.models.booking import Booking
+
+    # Verify trip belongs to tenant
+    trip = await db.get(Trip, trip_id)
+    if not trip or trip.tenant_id != tenant.id:
+        raise HTTPException(status_code=404, detail="Circuit non trouvé")
+
+    # Load all items with suppliers, via formulas -> trip_days
+    result = await db.execute(
+        select(Item, Formula, TripDay)
+        .join(Formula, Item.formula_id == Formula.id)
+        .join(TripDay, Formula.trip_day_id == TripDay.id)
+        .outerjoin(Supplier, Item.supplier_id == Supplier.id)
+        .where(TripDay.trip_id == trip_id)
+        .where(Item.supplier_id.isnot(None))
+        .options(
+            selectinload(Item.supplier),
+        )
+        .order_by(TripDay.day_number, Formula.sort_order, Item.sort_order)
+    )
+    rows = result.all()
+
+    # Check which items already have a pre-booking (with status, date, requester)
+    existing_bookings = await db.execute(
+        select(
+            Booking.item_id,
+            Booking.status,
+            Booking.created_at,
+            User.first_name,
+            User.last_name,
+        )
+        .outerjoin(User, Booking.requested_by_id == User.id)
+        .where(Booking.trip_id == trip_id)
+        .where(Booking.is_pre_booking.is_(True))
+        .where(sa_text("bookings.status != 'cancelled'"))
+    )
+    # Map item_id -> booking info
+    booked_item_info: dict[int, dict] = {}
+    for row in existing_bookings.all():
+        if row[0]:
+            requester_name = None
+            if row[3] or row[4]:
+                requester_name = f"{row[3] or ''} {row[4] or ''}".strip()
+            booked_item_info[row[0]] = {
+                "status": row[1],
+                "created_at": row[2],
+                "requested_by": requester_name,
+            }
+
+    from datetime import timedelta
+
+    items_out = []
+    for item, formula, trip_day in rows:
+        supplier = item.supplier
+        # Calculate service dates from trip_day.day_number (absolute day in circuit)
+        sds = None
+        sde = None
+        if trip.start_date and trip_day and trip_day.day_number:
+            sds = trip.start_date + timedelta(days=(trip_day.day_number - 1))
+            nights = 0
+            if formula and formula.service_day_end and formula.service_day_start:
+                nights = formula.service_day_end - formula.service_day_start
+            sde = sds + timedelta(days=max(nights, 0))
+
+        booking_info = booked_item_info.get(item.id)
+
+        # Calculate waiting time and overdue status
+        days_waiting = None
+        is_overdue = False
+        if booking_info and booking_info["created_at"] and booking_info["status"] == "pending":
+            from datetime import timezone
+            created = booking_info["created_at"]
+            if created.tzinfo:
+                now = datetime.now(timezone.utc)
+            else:
+                now = datetime.utcnow()
+            days_waiting = (now - created).days
+            # Overdue if > 2 business days (~3 calendar days to account for weekends)
+            is_overdue = days_waiting >= 3
+
+        items_out.append(BookableItem(
+            item_id=item.id,
+            item_name=item.name,
+            supplier_id=supplier.id if supplier else None,
+            supplier_name=supplier.name if supplier else None,
+            supplier_email=supplier.reservation_email if supplier else None,
+            block_type=formula.block_type,
+            formula_name=formula.name,
+            formula_id=formula.id,
+            day_number=trip_day.day_number,
+            service_date_start=sds,
+            service_date_end=sde,
+            requires_pre_booking=getattr(supplier, 'requires_pre_booking', False) if supplier else False,
+            already_booked=booking_info is not None,
+            booking_status=booking_info["status"] if booking_info else None,
+            booking_requested_at=booking_info["created_at"] if booking_info else None,
+            booking_requested_by=booking_info["requested_by"] if booking_info else None,
+            booking_days_waiting=days_waiting,
+            booking_overdue=is_overdue,
+        ))
+
+    return items_out
+
+
+@router.post("/{trip_id}/request-pre-bookings", response_model=List[PreBookingCreated])
+async def request_pre_bookings(
+    trip_id: int,
+    body: PreBookingRequest,
+    db: DbSession,
+    user: CurrentUser,
+    tenant: CurrentTenant,
+):
+    """
+    Create pre-booking requests for selected items in a circuit.
+    Notifies the logistics team.
+    """
+    from app.models.supplier import Supplier
+    from app.models.booking import Booking
+    from app.services.notification_service import notify_logistics_team
+
+    # Verify trip
+    trip = await db.get(Trip, trip_id)
+    if not trip or trip.tenant_id != tenant.id:
+        raise HTTPException(status_code=404, detail="Circuit non trouvé")
+
+    if not body.item_ids:
+        raise HTTPException(status_code=400, detail="Aucun item sélectionné")
+
+    # Load items with suppliers, formulas, AND trip_days (for correct date calc)
+    from datetime import timedelta
+
+    result = await db.execute(
+        select(Item, Formula, TripDay)
+        .join(Formula, Item.formula_id == Formula.id)
+        .join(TripDay, Formula.trip_day_id == TripDay.id)
+        .where(Item.id.in_(body.item_ids))
+        .options(
+            selectinload(Item.supplier),
+            selectinload(Item.cost_nature),
+        )
+    )
+    rows = result.all()
+
+    created_bookings = []
+    for item, formula, trip_day in rows:
+        supplier = item.supplier
+
+        # Calculate service dates from trip_day.day_number (absolute day in circuit)
+        sds = date.today()
+        sde = date.today()
+        if trip.start_date and trip_day and trip_day.day_number:
+            sds = trip.start_date + timedelta(days=(trip_day.day_number - 1))
+            # Multi-night: end = start + (service_day_end - service_day_start)
+            nights = 0
+            if formula and formula.service_day_end and formula.service_day_start:
+                nights = formula.service_day_end - formula.service_day_start
+            sde = sds + timedelta(days=max(nights, 0))
+
+        booking = Booking(
+            tenant_id=tenant.id,
+            trip_id=trip_id,
+            item_id=item.id,
+            supplier_id=supplier.id if supplier else None,
+            cost_nature_id=item.cost_nature_id or 1,  # Default to 1 if not set
+            description=f"{formula.name if formula else ''} — {item.name}",
+            service_date_start=sds,
+            service_date_end=sde,
+            booked_amount=item.unit_cost or 0,
+            currency=item.currency or "EUR",
+            vat_recoverable=False,
+            status="pending",
+            is_pre_booking=True,
+            requested_by_id=user.id,
+            formula_id=formula.id if formula else None,
+            pax_count=body.pax_count,
+            guest_names=body.guest_names,
+            supplier_response_note=body.notes,
+        )
+        db.add(booking)
+        created_bookings.append((booking, item, supplier))
+
+    await db.flush()
+
+    # Notify logistics team
+    try:
+        await notify_logistics_team(
+            db=db,
+            tenant_id=tenant.id,
+            type="pre_booking_request",
+            title=f"Nouvelle demande de pré-réservation — {trip.name}",
+            message=f"{len(created_bookings)} service(s) à réserver pour le circuit {trip.name}",
+            link=f"/admin/reservations?trip_id={trip_id}",
+            metadata={"trip_id": trip_id, "trip_name": trip.name, "count": len(created_bookings)},
+        )
+    except Exception as e:
+        logger.warning(f"Failed to send notifications: {e}")
+        # Rollback the failed notification flush, then re-flush bookings
+        await db.rollback()
+        # Re-add bookings to a fresh transaction
+        for booking, _, _ in created_bookings:
+            db.add(booking)
+        await db.flush()
+
+    await db.commit()
+
+    return [
+        PreBookingCreated(
+            booking_id=b.id,
+            item_name=item.name,
+            supplier_name=s.name if s else None,
+            status=b.status,
+        )
+        for b, item, s in created_bookings
+    ]
+
+
+# =============================================================================
+# Publish trip (draft → sent) + email to client
+# =============================================================================
+
+class PublishTripRequest(BaseModel):
+    client_email: Optional[str] = None  # Override dossier client email
+    send_email: bool = True  # Whether to send the email (default: yes)
+
+
+class PublishTripResponse(BaseModel):
+    trip: TripSummaryResponse
+    email_sent: bool
+
+
+@router.post("/{trip_id}/publish", response_model=PublishTripResponse)
+async def publish_trip(
+    trip_id: int,
+    db: DbSession,
+    user: CurrentUser,
+    tenant: CurrentTenant,
+    body: Optional[PublishTripRequest] = None,
+):
+    """
+    Publish a trip proposal: update status to 'sent', set sent_at, and
+    send an email to the client with the circuit presentation.
+    """
+    from app.models.dossier import Dossier
+    from app.services.email_service import EmailService
+
+    # Load trip with photos, cotations, and days
+    result = await db.execute(
+        select(Trip)
+        .where(Trip.id == trip_id, Trip.tenant_id == tenant.id)
+        .options(
+            selectinload(Trip.photos),
+            selectinload(Trip.cotations),
+            selectinload(Trip.days).selectinload(TripDay.location),
+        )
+    )
+    trip = result.scalar_one_or_none()
+    if not trip:
+        raise HTTPException(status_code=404, detail="Circuit non trouvé")
+
+    if trip.status not in ("draft", "quoted"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Le circuit est déjà en statut '{trip.status}'. Seuls les circuits en brouillon ou devis peuvent être publiés."
+        )
+
+    # Check at least one cotation has tarification
+    has_tarification = any(
+        cot.tarification_json and cot.tarification_json.get("entries")
+        for cot in trip.cotations
+    ) if trip.cotations else False
+
+    if not has_tarification:
+        raise HTTPException(
+            status_code=400,
+            detail="Le circuit doit avoir au moins une cotation avec une tarification renseignée."
+        )
+
+    # Load dossier for client info
+    dossier = None
+    if trip.dossier_id:
+        dossier_result = await db.execute(
+            select(Dossier).where(Dossier.id == trip.dossier_id)
+        )
+        dossier = dossier_result.scalar_one_or_none()
+
+    # Determine client email
+    client_email = (body.client_email if body else None) or (
+        dossier.client_email if dossier else None
+    ) or trip.client_email
+    client_name = (dossier.client_name if dossier else None) or trip.client_name or "Cher client"
+
+    # Update trip status
+    trip.status = "sent"
+    trip.sent_at = datetime.utcnow()
+
+    # Advance dossier status to "quote_sent" if still in early stages
+    if dossier and dossier.status in ("lead", "quote_in_progress"):
+        dossier.status = "quote_sent"
+
+    # Prepare email data
+    # Hero photo
+    hero_url = None
+    if trip.photos:
+        hero = next((p for p in trip.photos if p.is_hero), None) or (trip.photos[0] if trip.photos else None)
+        if hero:
+            hero_url = hero.url_medium or hero.url_large or hero.url or None
+
+    # Cotation summaries for email
+    cotation_data = []
+    for cot in sorted(trip.cotations or [], key=lambda c: c.sort_order or 0):
+        tarif = cot.tarification_json or {}
+        price_label = _build_price_label(
+            tarif.get("mode"), tarif.get("entries", []), trip.default_currency
+        )
+        cotation_data.append({
+            "name": cot.name,
+            "price_label": price_label,
+        })
+
+    # Days summary for email
+    days_data = []
+    for day in sorted(trip.days or [], key=lambda d: d.sort_order or d.day_number):
+        days_data.append({
+            "day_number": day.day_number,
+            "day_number_end": day.day_number_end,
+            "title": day.title,
+        })
+
+    # Send email (only if requested)
+    should_send = body.send_email if body else True
+    email_sent = False
+    if should_send and client_email:
+        email_service = EmailService()
+        email_sent = email_service.send_trip_proposal(
+            trip=trip,
+            dossier=dossier,
+            client_email=client_email,
+            client_name=client_name,
+            cotations=cotation_data,
+            days_summary=days_data,
+            hero_photo_url=hero_url,
+            portal_url=None,  # TODO: build client portal URL
+        )
+
+    await db.commit()
+
+    # Build summary response
+    summary = TripSummaryResponse.model_validate(trip)
+    # Enrich hero photo
+    summary.hero_photo_url = hero_url
+    # Enrich cotations
+    cot_summaries = []
+    for cot in sorted(trip.cotations or [], key=lambda c: c.sort_order or 0):
+        tarif = cot.tarification_json or {}
+        tarif_mode = tarif.get("mode")
+        price_label = _build_price_label(tarif_mode, tarif.get("entries", []), trip.default_currency)
+        cot_summaries.append(CotationSummary(
+            id=cot.id, name=cot.name, mode=cot.mode,
+            tarification_mode=tarif_mode, price_label=price_label,
+        ))
+    summary.cotations_summary = cot_summaries
+
+    logger.info(
+        "Trip %s published (sent) for dossier %s. Email sent: %s",
+        trip_id, trip.dossier_id, email_sent,
+    )
+
+    return PublishTripResponse(trip=summary, email_sent=email_sent)
+
+
+# =============================================================================
+# Selection options (what can the seller choose?)
+# =============================================================================
+
+class SelectionEntry(BaseModel):
+    pax_label: Optional[str] = None
+    selling_price: Optional[float] = None
+    pax_count: Optional[int] = None
+
+
+class SelectionCotation(BaseModel):
+    id: int
+    name: str
+    mode: str
+    tarification_mode: Optional[str] = None
+    price_label: Optional[str] = None
+    entries: List[SelectionEntry] = []
+
+
+class SelectionOptionsResponse(BaseModel):
+    trip_id: int
+    trip_name: str
+    cotations: List[SelectionCotation] = []
+
+
+@router.get("/{trip_id}/selection-options", response_model=SelectionOptionsResponse)
+async def get_selection_options(
+    trip_id: int,
+    db: DbSession,
+    user: CurrentUser,
+    tenant: CurrentTenant,
+):
+    """
+    Get the available selection options for a trip:
+    cotations with their pricing entries so the seller can pick
+    the right cotation and pax count.
+    """
+    result = await db.execute(
+        select(Trip)
+        .where(Trip.id == trip_id, Trip.tenant_id == tenant.id)
+        .options(selectinload(Trip.cotations))
+    )
+    trip = result.scalar_one_or_none()
+    if not trip:
+        raise HTTPException(status_code=404, detail="Circuit non trouvé")
+
+    cotations_out = []
+    for cot in sorted(trip.cotations or [], key=lambda c: c.sort_order or 0):
+        tarif = cot.tarification_json or {}
+        tarif_mode = tarif.get("mode")
+        entries_raw = tarif.get("entries", [])
+        price_label = _build_price_label(tarif_mode, entries_raw, trip.default_currency)
+
+        entries = []
+        for e in entries_raw:
+            # Resolve selling_price from various entry formats:
+            # range_web: selling_price, per_person: price_per_person,
+            # per_group: group_price, service_list/enumeration: price_per_person
+            sp = (
+                e.get("selling_price")
+                or e.get("price_per_person")
+                or e.get("group_price")
+                or e.get("unit_price")
+            )
+            # Resolve pax_count from various entry formats:
+            # range_web: pax_min, per_person: total_pax, service_list: pax
+            pc = (
+                e.get("pax_count")
+                or e.get("nb_pax")
+                or e.get("total_pax")
+                or e.get("pax_min")
+                or e.get("pax")
+            )
+            entries.append(SelectionEntry(
+                pax_label=e.get("pax_label") or e.get("label"),
+                selling_price=sp,
+                pax_count=pc,
+            ))
+
+        cotations_out.append(SelectionCotation(
+            id=cot.id,
+            name=cot.name,
+            mode=cot.mode,
+            tarification_mode=tarif_mode,
+            price_label=price_label,
+            entries=entries,
+        ))
+
+    return SelectionOptionsResponse(
+        trip_id=trip.id,
+        trip_name=trip.name,
+        cotations=cotations_out,
+    )
+
+
+# =============================================================================
+# Select trip (confirm a trip for a dossier)
+# =============================================================================
+
+class SelectTripRequest(BaseModel):
+    cotation_id: int
+    final_pax_count: Optional[int] = None
+
+
+class SelectTripResponse(BaseModel):
+    trip: TripSummaryResponse
+    other_trips_cancelled: int
+
+
+@router.post("/{trip_id}/select", response_model=SelectTripResponse)
+async def select_trip(
+    trip_id: int,
+    body: SelectTripRequest,
+    db: DbSession,
+    user: CurrentUser,
+    tenant: CurrentTenant,
+):
+    """
+    Select/confirm a trip proposal for a dossier.
+
+    - Confirms this trip (status → confirmed)
+    - Cancels all other trips linked to the same dossier
+    - Updates the dossier with selection details
+    """
+    from app.models.dossier import Dossier
+
+    logger.info("[select_trip] Called with trip_id=%s, cotation_id=%s, final_pax_count=%s",
+                trip_id, body.cotation_id, body.final_pax_count)
+
+    # Load trip with cotations
+    result = await db.execute(
+        select(Trip)
+        .where(Trip.id == trip_id, Trip.tenant_id == tenant.id)
+        .options(
+            selectinload(Trip.cotations),
+            selectinload(Trip.photos),
+        )
+    )
+    trip = result.scalar_one_or_none()
+    if not trip:
+        logger.warning("[select_trip] Trip %s not found for tenant %s", trip_id, tenant.id)
+        raise HTTPException(status_code=404, detail="Circuit non trouvé")
+
+    logger.info("[select_trip] Trip found: id=%s, status=%s, dossier_id=%s, cotations=%d",
+                trip.id, trip.status, trip.dossier_id, len(trip.cotations or []))
+
+    if trip.status not in ("draft", "sent", "confirmed", "quoted"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Le circuit doit être en statut 'brouillon', 'envoyé' ou 'devis' pour être sélectionné (statut actuel: {trip.status})."
+        )
+
+    if not trip.dossier_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Ce circuit n'est rattaché à aucun dossier."
+        )
+
+    # Validate cotation exists
+    selected_cotation = next(
+        (c for c in trip.cotations if c.id == body.cotation_id), None
+    )
+    if not selected_cotation:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cotation {body.cotation_id} non trouvée pour ce circuit."
+        )
+
+    # Confirm this trip
+    trip.status = "confirmed"
+
+    # Cancel other trips for same dossier
+    # Use cast to text to avoid PostgreSQL enum comparison issues with asyncpg
+    other_trips_result = await db.execute(
+        select(Trip).where(
+            Trip.dossier_id == trip.dossier_id,
+            Trip.tenant_id == tenant.id,
+            Trip.id != trip_id,
+            Trip.status.cast(SAString).notin_(["cancelled", "completed"]),
+        )
+    )
+    other_trips = list(other_trips_result.scalars().all())
+    for other in other_trips:
+        other.status = "cancelled"
+
+    # Update dossier selection
+    dossier_result = await db.execute(
+        select(Dossier).where(Dossier.id == trip.dossier_id)
+    )
+    dossier = dossier_result.scalar_one_or_none()
+    if dossier:
+        dossier.selected_trip_id = trip.id
+        dossier.selected_cotation_id = selected_cotation.id
+        dossier.selected_cotation_name = selected_cotation.name
+        dossier.final_pax_count = body.final_pax_count
+        dossier.selected_at = datetime.utcnow()
+        # Save current status for deselection rollback, then advance to "option"
+        if dossier.status in ("lead", "quote_in_progress", "quote_sent", "negotiation", "non_reactive"):
+            dossier.status_before_selection = dossier.status
+            dossier.status = "option"
+
+    try:
+        await db.commit()
+        logger.info("[select_trip] DB commit successful")
+    except Exception as e:
+        logger.error("[select_trip] DB commit failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la confirmation: {str(e)}")
+
+    # Re-fetch trip with relations to avoid MissingGreenlet after commit
+    result2 = await db.execute(
+        select(Trip)
+        .where(Trip.id == trip_id)
+        .options(selectinload(Trip.cotations), selectinload(Trip.photos))
+    )
+    trip = result2.scalar_one()
+
+    # Build response
+    try:
+        summary = TripSummaryResponse.model_validate(trip)
+        # Enrich hero photo
+        if trip.photos:
+            hero = next((p for p in trip.photos if p.is_hero), None) or (trip.photos[0] if trip.photos else None)
+            if hero:
+                summary.hero_photo_url = hero.url_medium or hero.url_large or hero.url or None
+        # Enrich cotations
+        cot_summaries = []
+        for cot in sorted(trip.cotations or [], key=lambda c: c.sort_order or 0):
+            tarif = cot.tarification_json or {}
+            tarif_mode = tarif.get("mode")
+            price_label = _build_price_label(tarif_mode, tarif.get("entries", []), trip.default_currency)
+            cot_summaries.append(CotationSummary(
+                id=cot.id, name=cot.name, mode=cot.mode,
+                tarification_mode=tarif_mode, price_label=price_label,
+            ))
+        summary.cotations_summary = cot_summaries
+    except Exception as e:
+        logger.error("[select_trip] Response build failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la construction de la réponse: {str(e)}")
+
+    logger.info(
+        "Trip %s selected for dossier %s. Cotation: %s (%s). %d other trips cancelled.",
+        trip_id, trip.dossier_id, selected_cotation.name, body.cotation_id, len(other_trips),
+    )
+
+    return SelectTripResponse(
+        trip=summary,
+        other_trips_cancelled=len(other_trips),
+    )
+
+
+# =============================================================================
+# Deselect trip (undo a selection, restore all trips to "sent")
+# =============================================================================
+
+class DeselectTripResponse(BaseModel):
+    trips_restored: int
+
+
+@router.post("/{trip_id}/deselect", response_model=DeselectTripResponse)
+async def deselect_trip(
+    trip_id: int,
+    db: DbSession,
+    user: CurrentUser,
+    tenant: CurrentTenant,
+):
+    """
+    Deselect/undo a trip confirmation for a dossier.
+
+    - Reverts this trip from 'confirmed' back to 'sent'
+    - Restores all cancelled trips for the same dossier back to 'sent'
+    - Clears the dossier selection fields
+    - Reverts dossier status to 'quote_sent'
+    """
+    from app.models.dossier import Dossier
+
+    # Load trip
+    result = await db.execute(
+        select(Trip).where(Trip.id == trip_id, Trip.tenant_id == tenant.id)
+    )
+    trip = result.scalar_one_or_none()
+    if not trip:
+        raise HTTPException(status_code=404, detail="Circuit non trouvé")
+
+    if trip.status != "confirmed":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Seul un circuit confirmé peut être désélectionné (statut actuel: {trip.status})."
+        )
+
+    if not trip.dossier_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Ce circuit n'est rattaché à aucun dossier."
+        )
+
+    # Revert this trip to "sent"
+    trip.status = "sent"
+
+    # Restore cancelled trips for same dossier back to "sent"
+    # Use cast to avoid PostgreSQL enum comparison issues with asyncpg
+    cancelled_result = await db.execute(
+        select(Trip).where(
+            Trip.dossier_id == trip.dossier_id,
+            Trip.tenant_id == tenant.id,
+            Trip.id != trip_id,
+            Trip.status.cast(SAString) == "cancelled",
+        )
+    )
+    cancelled_trips = list(cancelled_result.scalars().all())
+    for ct in cancelled_trips:
+        ct.status = "sent"
+
+    # Clear dossier selection fields
+    dossier_result = await db.execute(
+        select(Dossier).where(Dossier.id == trip.dossier_id)
+    )
+    dossier = dossier_result.scalar_one_or_none()
+    if dossier:
+        dossier.selected_trip_id = None
+        dossier.selected_cotation_id = None
+        dossier.selected_cotation_name = None
+        dossier.final_pax_count = None
+        dossier.selected_at = None
+        # Revert dossier status to what it was before selection
+        if dossier.status in ("option", "confirmed"):
+            dossier.status = dossier.status_before_selection or "quote_sent"
+        dossier.status_before_selection = None
+
+    await db.commit()
+
+    total_restored = len(cancelled_trips) + 1  # +1 for the confirmed trip itself
+    logger.info(
+        "Trip %s deselected for dossier %s. %d trips restored to 'sent'.",
+        trip_id, trip.dossier_id, total_restored,
+    )
+
+    return DeselectTripResponse(trips_restored=total_restored)

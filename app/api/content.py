@@ -450,7 +450,7 @@ def entity_to_response(entity: ContentEntity, include_relations: bool = True) ->
             "id": entity.location.id,
             "name": entity.location.name,
             "country_code": entity.location.country_code,
-            "city": entity.location.city,
+            "city": entity.location.name,
         }
 
     return data
@@ -472,7 +472,7 @@ def entity_to_list_item(entity: ContentEntity) -> dict:
             "id": entity.location.id,
             "name": entity.location.name,
             "country_code": entity.location.country_code,
-            "city": entity.location.city,
+            "city": entity.location.name,
         } if entity.location else None,
         "translations": [
             {

@@ -56,6 +56,8 @@ class SupplierCreate(BaseModel):
     # Billing entity (for logistics)
     billing_entity_name: Optional[str] = None  # Alternative name if different from supplier
     billing_entity_note: Optional[str] = None  # Note for logistics
+    # Pre-booking
+    requires_pre_booking: Optional[bool] = False
     # Notes
     internal_notes: Optional[str] = None
     logistics_notes: Optional[str] = None
@@ -88,6 +90,8 @@ class SupplierUpdate(BaseModel):
     # Billing entity (for logistics)
     billing_entity_name: Optional[str] = None
     billing_entity_note: Optional[str] = None
+    # Pre-booking
+    requires_pre_booking: Optional[bool] = None
     internal_notes: Optional[str] = None
     logistics_notes: Optional[str] = None
     quality_notes: Optional[str] = None
@@ -131,6 +135,8 @@ class SupplierResponse(BaseModel):
     tags: Optional[List[str]] = None
     # Location link
     location_id: Optional[int] = None
+    # Pre-booking
+    requires_pre_booking: bool = False
     # Contract workflow (user-managed)
     contract_workflow_status: Optional[str] = None  # needs_contract, contract_requested, dynamic_pricing
     # Contract info (calculated from relationships)
@@ -297,6 +303,8 @@ def supplier_to_response(supplier: Supplier) -> SupplierResponse:
         # Billing entity
         billing_entity_name=getattr(supplier, 'billing_entity_name', None),
         billing_entity_note=getattr(supplier, 'billing_entity_note', None),
+        # Pre-booking
+        requires_pre_booking=getattr(supplier, 'requires_pre_booking', False),
         internal_notes=getattr(supplier, 'internal_notes', None),
         logistics_notes=getattr(supplier, 'logistics_notes', None),
         quality_notes=getattr(supplier, 'quality_notes', None),
@@ -438,6 +446,7 @@ async def create_supplier(
             default_payment_terms_id=data.default_payment_terms_id,
             billing_entity_name=data.billing_entity_name,
             billing_entity_note=data.billing_entity_note,
+            requires_pre_booking=data.requires_pre_booking if data.requires_pre_booking is not None else False,
             is_active=data.status != 'inactive' if data.status else True,
         )
         print(f"[create_supplier] Supplier object created: {supplier}")
@@ -541,7 +550,8 @@ async def update_supplier(
                     'country_code', 'city', 'address', 'website', 'tax_id', 'is_vat_registered',
                     'default_currency', 'default_payment_terms_id', 'is_active',
                     'location_id', 'contract_workflow_status',
-                    'billing_entity_name', 'billing_entity_note'}
+                    'billing_entity_name', 'billing_entity_note',
+                    'requires_pre_booking'}
 
     applied_fields = []
     for field, value in update_data.items():
