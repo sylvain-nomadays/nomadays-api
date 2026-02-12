@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>{{ doc_type_label }} {{ invoice.number }}</title>
+    <style>
+        @page {
+            size: A4;
+            margin: 20mm 15mm 25mm 15mm;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            font-size: 10pt;
+            color: #333;
+            line-height: 1.4;
+        }
+
+        /* Header */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #0FB6BC;
+        }
+
+        .logo-area {
+            flex: 1;
+        }
+
+        .logo-area h1 {
+            font-size: 22pt;
+            color: #4A4A4A;
+            font-weight: 700;
+            letter-spacing: 1px;
+        }
+
+        .doc-info {
+            text-align: right;
+        }
+
+        .doc-type {
+            font-size: 16pt;
+            font-weight: 700;
+            color: #0FB6BC;
+            margin-bottom: 5px;
+        }
+
+        .doc-number {
+            font-size: 11pt;
+            color: #666;
+        }
+
+        .doc-date {
+            font-size: 10pt;
+            color: #666;
+            margin-top: 3px;
+        }
+
+        /* Sender info */
+        .sender-info {
+            font-size: 8pt;
+            color: #888;
+            margin-bottom: 20px;
+            line-height: 1.3;
+        }
+
+        /* Two-column section */
+        .two-col {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 25px;
+        }
+
+        .two-col .col {
+            width: 48%;
+        }
+
+        .section-title {
+            font-size: 8pt;
+            font-weight: 700;
+            text-transform: uppercase;
+            color: #0FB6BC;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+            padding-bottom: 3px;
+            border-bottom: 1px solid #e5e5e5;
+        }
+
+        .client-info {
+            font-size: 10pt;
+            line-height: 1.5;
+        }
+
+        .client-info strong {
+            font-size: 11pt;
+        }
+
+        .travel-info {
+            font-size: 10pt;
+            line-height: 1.5;
+        }
+
+        /* Lines table */
+        .lines-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }
+
+        .lines-table thead th {
+            background: #f5f5f5;
+            font-size: 8pt;
+            font-weight: 700;
+            text-transform: uppercase;
+            color: #666;
+            padding: 8px 10px;
+            text-align: left;
+            border-bottom: 2px solid #e5e5e5;
+        }
+
+        .lines-table thead th.amount {
+            text-align: right;
+        }
+
+        .lines-table tbody td {
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+            vertical-align: top;
+        }
+
+        .lines-table tbody td.amount {
+            text-align: right;
+            white-space: nowrap;
+        }
+
+        .line-description {
+            font-size: 10pt;
+        }
+
+        .line-details {
+            font-size: 8pt;
+            color: #888;
+            margin-top: 3px;
+        }
+
+        /* Totals */
+        .totals {
+            margin-left: auto;
+            width: 45%;
+            margin-bottom: 20px;
+        }
+
+        .totals-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 5px 0;
+            font-size: 10pt;
+        }
+
+        .totals-row.grand-total {
+            border-top: 2px solid #333;
+            padding-top: 8px;
+            margin-top: 5px;
+            font-size: 13pt;
+            font-weight: 700;
+            color: #0FB6BC;
+        }
+
+        /* VAT mention */
+        .vat-mention {
+            background: #f9f9f9;
+            padding: 10px 15px;
+            border-left: 3px solid #0FB6BC;
+            font-size: 9pt;
+            color: #666;
+            margin-bottom: 20px;
+            font-style: italic;
+        }
+
+        /* Payment section */
+        .payment-section {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #fafafa;
+            border: 1px solid #e5e5e5;
+            border-radius: 4px;
+        }
+
+        .payment-section h3 {
+            font-size: 10pt;
+            font-weight: 700;
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .payment-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 9pt;
+            margin-bottom: 4px;
+        }
+
+        .payment-row .label {
+            color: #666;
+        }
+
+        .payment-row .value {
+            font-weight: 600;
+        }
+
+        /* Late payment */
+        .late-payment {
+            font-size: 8pt;
+            color: #999;
+            margin-bottom: 15px;
+            padding: 8px 0;
+            border-top: 1px solid #e5e5e5;
+        }
+
+        /* Legal footer */
+        .legal-footer {
+            font-size: 7pt;
+            color: #aaa;
+            line-height: 1.4;
+            padding-top: 10px;
+            border-top: 1px solid #e5e5e5;
+            position: fixed;
+            bottom: 0;
+            left: 15mm;
+            right: 15mm;
+        }
+
+        .legal-footer p {
+            margin-bottom: 2px;
+        }
+
+        /* Credit note marker */
+        .credit-note-marker {
+            color: #DC2626;
+            font-weight: 700;
+        }
+
+        /* Réforme 2026 — mentions supplémentaires */
+        .reform-mentions {
+            font-size: 8pt;
+            color: #888;
+            margin-bottom: 15px;
+            padding: 8px 12px;
+            background: #f9f9f9;
+            border: 1px solid #eee;
+            border-radius: 3px;
+        }
+
+        .reform-mentions p {
+            margin-bottom: 2px;
+        }
+
+        .delivery-address {
+            margin-top: 8px;
+            font-size: 9pt;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Header -->
+    <div class="header">
+        <div class="logo-area">
+            <h1>NOMADAYS</h1>
+        </div>
+        <div class="doc-info">
+            <div class="doc-type {% if is_credit_note %}credit-note-marker{% endif %}">
+                {{ doc_type_label }}
+            </div>
+            <div class="doc-number">N° {{ invoice.number }}</div>
+            <div class="doc-date">Date : {{ format_date(invoice.issue_date) }}</div>
+        </div>
+    </div>
+
+    <!-- Sender info line -->
+    <div class="sender-info">
+        {{ sender.get('company_name', 'NOMADAYS SAS') }}
+        — {{ sender.get('address', '') }}, {{ sender.get('postal_code', '') }} {{ sender.get('city', '') }}
+        {% if sender.get('siren') %}— SIREN : {{ sender.get('siren') }}{% endif %}
+        — SIRET : {{ sender.get('siret', '') }}
+        — RCS {{ sender.get('rcs', '') }}
+        — TVA : {{ sender.get('vat_number', '') }}
+        — Immatriculation : {{ sender.get('immatriculation', '') }}
+    </div>
+
+    <!-- Client + Travel info -->
+    <div class="two-col">
+        <div class="col">
+            <div class="section-title">Destinataire</div>
+            <div class="client-info">
+                {% if invoice.client_company %}
+                    <strong>{{ invoice.client_company }}</strong><br>
+                    {% if invoice.client_name %}À l'attention de {{ invoice.client_name }}<br>{% endif %}
+                {% else %}
+                    <strong>{{ invoice.client_name or '' }}</strong><br>
+                {% endif %}
+                {% if invoice.client_address %}{{ invoice.client_address }}<br>{% endif %}
+                {% if invoice.client_email %}{{ invoice.client_email }}{% endif %}
+                {% if invoice.client_siret %}<br>SIRET : {{ invoice.client_siret }}{% endif %}
+                {% if invoice.client_siren %}<br>SIREN : {{ invoice.client_siren }}{% endif %}
+                {% if invoice.client_vat_number %}<br>TVA Intra. : {{ invoice.client_vat_number }}{% endif %}
+            </div>
+            {% if invoice.delivery_address_line1 %}
+            <div class="delivery-address">
+                <strong>Adresse de livraison :</strong><br>
+                {{ invoice.delivery_address_line1 }}<br>
+                {% if invoice.delivery_address_postal_code %}{{ invoice.delivery_address_postal_code }} {% endif %}{{ invoice.delivery_address_city or '' }}
+                {% if invoice.delivery_address_country %}<br>{{ invoice.delivery_address_country }}{% endif %}
+            </div>
+            {% endif %}
+        </div>
+        <div class="col">
+            <div class="section-title">Voyage</div>
+            <div class="travel-info">
+                {% if invoice.travel_start_date and invoice.travel_end_date %}
+                    Du {{ format_date(invoice.travel_start_date) }} au {{ format_date(invoice.travel_end_date) }}<br>
+                {% endif %}
+                {% if invoice.dossier_id %}
+                    Référence dossier : {{ invoice.dossier_id }}
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Line items -->
+    <table class="lines-table">
+        <thead>
+            <tr>
+                <th style="width: 70%">Désignation</th>
+                <th class="amount" style="width: 10%">Qté</th>
+                <th class="amount" style="width: 10%">P.U.</th>
+                <th class="amount" style="width: 10%">Montant</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for line in lines %}
+            <tr>
+                <td>
+                    <div class="line-description">{{ line.description }}</div>
+                    {% if line.details %}
+                        <div class="line-details">{{ line.details }}</div>
+                    {% endif %}
+                </td>
+                <td class="amount">{{ line.quantity }}</td>
+                <td class="amount">{{ format_amount(line.unit_price_ttc, invoice.currency) }}</td>
+                <td class="amount">{{ format_amount(line.total_ttc, invoice.currency) }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <!-- Totals -->
+    <div class="totals">
+        {% if show_deposit_balance and not is_credit_note %}
+            <div class="totals-row grand-total">
+                <span>TOTAL À PAYER</span>
+                <span>{{ format_amount(invoice.total_ttc, invoice.currency) }}{% if is_eu %} TTC{% endif %}</span>
+            </div>
+        {% elif is_credit_note %}
+            <div class="totals-row grand-total credit-note-marker">
+                <span>TOTAL AVOIR</span>
+                <span>{{ format_amount(invoice.total_ttc, invoice.currency) }}</span>
+            </div>
+        {% else %}
+            <div class="totals-row grand-total">
+                <span>TOTAL À PAYER</span>
+                <span>{{ format_amount(invoice.total_ttc, invoice.currency) }}{% if is_eu %} TTC{% endif %}</span>
+            </div>
+        {% endif %}
+    </div>
+
+    <!-- VAT mention -->
+    <div class="vat-mention">
+        {{ invoice.vat_legal_mention or '' }}
+    </div>
+
+    <!-- Payment terms -->
+    {% if show_deposit_balance %}
+    <div class="payment-section">
+        <h3>Conditions de paiement</h3>
+        <div class="payment-row">
+            <span class="label">Acompte de {{ invoice.deposit_pct }}% à la réservation :</span>
+            <span class="value">{{ format_amount(invoice.deposit_amount, invoice.currency) }}</span>
+        </div>
+        <div class="payment-row">
+            <span class="label">Solde au plus tard 30 jours avant le départ :</span>
+            <span class="value">{{ format_amount(invoice.balance_amount, invoice.currency) }}</span>
+        </div>
+        {% if invoice.due_date %}
+        <div class="payment-row" style="margin-top: 8px;">
+            <span class="label">Date limite de paiement :</span>
+            <span class="value">{{ format_date(invoice.due_date) }}</span>
+        </div>
+        {% endif %}
+        <div style="margin-top: 10px; font-size: 9pt; color: #666;">
+            Paiement par virement bancaire<br>
+            Référence : {{ invoice.number }}
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Client notes -->
+    {% if invoice.client_notes %}
+    <div style="margin-bottom: 15px; font-size: 9pt; color: #666;">
+        {{ invoice.client_notes }}
+    </div>
+    {% endif %}
+
+    <!-- Réforme e-facture 2026 — Mentions obligatoires -->
+    <div class="reform-mentions">
+        <p><strong>Catégorie d'opération :</strong>
+            {% if invoice.operation_category == 'LB' %}
+                Livraison de biens
+            {% elif invoice.operation_category == 'LBPS' %}
+                Livraison de biens et prestation de services
+            {% else %}
+                Prestation de services
+            {% endif %}
+        </p>
+        {% if sender.get('siren') %}
+        <p><strong>SIREN émetteur :</strong> {{ sender.get('siren') }}</p>
+        {% endif %}
+        {% if invoice.client_siren %}
+        <p><strong>SIREN acheteur :</strong> {{ invoice.client_siren }}</p>
+        {% endif %}
+        <p><strong>TVA sur les débits :</strong>
+            {% if invoice.vat_on_debits %}
+                Oui — TVA exigible à la date de facturation
+            {% else %}
+                Non — TVA exigible à l'encaissement
+            {% endif %}
+        </p>
+    </div>
+
+    <!-- Late payment notice -->
+    <div class="late-payment">
+        En cas de retard de paiement :
+        pénalités de retard au taux de 3 fois le taux d'intérêt légal ;
+        indemnité forfaitaire pour frais de recouvrement : 40 €.
+    </div>
+
+    <!-- Legal footer -->
+    <div class="legal-footer">
+        <p>Garantie financière : {{ sender.get('garantie', 'APST - 15 avenue Carnot, 75017 Paris') }}</p>
+        <p>Assurance RCP : {{ sender.get('assurance_rcp', 'AXA France') }}</p>
+        <p>Médiateur : {{ sender.get('mediateur', 'MTV - Médiation Tourisme et Voyage - www.mtv.travel') }}</p>
+        <p>Conditions générales de vente disponibles sur www.nomadays.fr/cgv</p>
+        <p style="margin-top: 4px; font-size: 6pt; color: #ccc;">
+            Document généré le {{ generated_at }}
+        </p>
+    </div>
+
+</body>
+</html>
