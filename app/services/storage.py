@@ -144,6 +144,63 @@ async def upload_to_supabase(
     return storage_path, public_url
 
 
+async def upload_to_supabase_generic(
+    file_content: bytes,
+    original_filename: str,
+    folder_path: str,
+    mime_type: Optional[str] = None,
+) -> Tuple[str, str]:
+    """
+    Upload a file to Supabase Storage with a custom folder path.
+
+    Generic version that works for any entity type (locations, trips, etc.)
+
+    Args:
+        file_content: The file bytes
+        original_filename: Original filename for extension detection
+        folder_path: Folder path in storage (e.g. "photos/{tenant_id}/locations/{location_id}")
+        mime_type: Optional MIME type override
+
+    Returns:
+        Tuple of (storage_path, public_url)
+    """
+    client = get_supabase_client()
+
+    # Validate file
+    is_valid, error = validate_file(file_content, original_filename, mime_type)
+    if not is_valid:
+        raise ValueError(error)
+
+    # Determine file extension
+    actual_mime = mime_type or get_mime_type(original_filename)
+    ext = MIME_TO_EXT.get(actual_mime, Path(original_filename).suffix.lower())
+
+    # Generate unique filename
+    unique_filename = f"{uuid.uuid4()}{ext}"
+
+    # Build storage path
+    storage_path = f"{folder_path}/{unique_filename}"
+
+    # Upload to bucket
+    result = client.storage.from_(BUCKET_NAME).upload(
+        path=storage_path,
+        file=file_content,
+        file_options={
+            "content-type": actual_mime,
+            "cache-control": "3600",
+        },
+    )
+
+    # Check for errors
+    if hasattr(result, "error") and result.error:
+        raise Exception(f"Upload failed: {result.error}")
+
+    # Get public URL
+    public_url = client.storage.from_(BUCKET_NAME).get_public_url(storage_path)
+
+    return storage_path, public_url
+
+
 async def delete_from_supabase(storage_path: str) -> bool:
     """
     Delete a file from Supabase Storage.

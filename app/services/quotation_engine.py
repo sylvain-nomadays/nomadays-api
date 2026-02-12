@@ -126,7 +126,7 @@ class QuotationEngine:
         - item_currency: original currency of the item
         - exchange_rate: rate used for conversion (1.0 if same currency)
         - vat_recoverable: VAT amount recoverable if item is TTC
-        - vat_surcharge: VAT surcharge applied on HT items (on_selling_price mode)
+        - vat_surcharge: VAT surcharge applied on HT items (added to cost before margin)
         - warnings: any calculation warnings
         """
         warnings = []
@@ -150,27 +150,30 @@ class QuotationEngine:
 
         vat_calculation_mode = getattr(trip, "vat_calculation_mode", "on_margin") or "on_margin"
 
-        if is_ttc:
-            # Item is TTC → extract recoverable VAT from cost
-            vat_rate_pct = self._get_item_vat_rate(item, country_vat_rate)
-            if vat_rate_pct and vat_rate_pct > 0:
-                vat_rate = Decimal(str(vat_rate_pct))
-                unit_cost_ht = unit_cost_local / (Decimal("1") + vat_rate / Decimal("100"))
-                vat_recoverable = (unit_cost_local - unit_cost_ht).quantize(
-                    Decimal("0.01"), rounding=ROUND_HALF_UP
-                )
-                unit_cost_local = unit_cost_ht.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        else:
-            # Item is HT → if on_selling_price mode, surcharge cost by VAT rate
-            # to protect margin from non-recoverable VAT
-            if vat_calculation_mode == "on_selling_price" and country_vat_rate:
+        # HT/TTC distinction only applies in "on_selling_price" mode.
+        # In "on_margin" mode, VAT is calculated on the gross margin only —
+        # no recoverable VAT, no surcharge needed. Items keep their raw cost.
+        if vat_calculation_mode == "on_selling_price":
+            if is_ttc:
+                # Item is TTC → extract recoverable VAT from cost
                 vat_rate_pct = self._get_item_vat_rate(item, country_vat_rate)
                 if vat_rate_pct and vat_rate_pct > 0:
                     vat_rate = Decimal(str(vat_rate_pct))
-                    vat_surcharge = (unit_cost_local * vat_rate / Decimal("100")).quantize(
+                    unit_cost_ht = unit_cost_local / (Decimal("1") + vat_rate / Decimal("100"))
+                    vat_recoverable = (unit_cost_local - unit_cost_ht).quantize(
                         Decimal("0.01"), rounding=ROUND_HALF_UP
                     )
-                    unit_cost_local = unit_cost_local + vat_surcharge
+                    unit_cost_local = unit_cost_ht.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            else:
+                # Item is HT → surcharge cost by VAT rate to protect margin
+                if country_vat_rate:
+                    vat_rate_pct = self._get_item_vat_rate(item, country_vat_rate)
+                    if vat_rate_pct and vat_rate_pct > 0:
+                        vat_rate = Decimal(str(vat_rate_pct))
+                        vat_surcharge = (unit_cost_local * vat_rate / Decimal("100")).quantize(
+                            Decimal("0.01"), rounding=ROUND_HALF_UP
+                        )
+                        unit_cost_local = unit_cost_local + vat_surcharge
 
         # 3. Convert to selling currency if different
         selling_currency = trip.default_currency or "EUR"
@@ -302,7 +305,18 @@ class QuotationEngine:
         price_tiers = getattr(item, "price_tiers", None) or []
         if not price_tiers:
             # No tiers — use standard cost (with seasonal logic)
-            return (self._get_unit_cost(item, trip, warnings), None)
+            base_cost = self._get_unit_cost(item, trip, warnings)
+            # Check for per-category absolute prices on the item itself
+            category_prices = getattr(item, "category_prices_json", None)
+            if category_prices:
+                category_costs: Dict[str, Decimal] = {}
+                for cat, count in pax_args.items():
+                    if count <= 0:
+                        continue
+                    cat_price = category_prices.get(cat)
+                    category_costs[cat] = Decimal(str(cat_price)) if cat_price is not None else base_cost
+                return (base_cost, category_costs)
+            return (base_cost, None)
 
         # Determine pax count for tier selection
         tier_categories_str = getattr(item, "tier_categories", None)
@@ -333,17 +347,28 @@ class QuotationEngine:
 
         base_cost = Decimal(str(matching_tier.unit_cost))
 
-        # Apply category adjustments if present
+        # Absolute per-category prices (priority over % adjustments)
+        category_prices = getattr(matching_tier, "category_prices_json", None)
+        if category_prices:
+            cat_costs: Dict[str, Decimal] = {}
+            for cat, count in pax_args.items():
+                if count <= 0:
+                    continue
+                cat_price = category_prices.get(cat)
+                cat_costs[cat] = Decimal(str(cat_price)) if cat_price is not None else base_cost
+            return (base_cost, cat_costs)
+
+        # Apply category adjustments if present (% based)
         adjustments = matching_tier.category_adjustments_json
         if adjustments:
-            category_costs: Dict[str, Decimal] = {}
+            cat_costs_adj: Dict[str, Decimal] = {}
             for cat, count in pax_args.items():
                 if count <= 0:
                     continue
                 adj_pct = adjustments.get(cat, 0)  # % adjustment (-10 = -10%)
                 adj_cost = base_cost * (Decimal("1") + Decimal(str(adj_pct)) / Decimal("100"))
-                category_costs[cat] = adj_cost.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            return (base_cost, category_costs)
+                cat_costs_adj[cat] = adj_cost.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            return (base_cost, cat_costs_adj)
 
         return (base_cost, None)
 
