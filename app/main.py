@@ -10,6 +10,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+
 from app.config import get_settings
 from app.api import (
     auth,
@@ -39,6 +42,7 @@ from app.api import (
     payment_terms,
     content,
     content_import,
+    cms_snippets,
     cost_natures,
     conditions,
     trip_conditions,
@@ -50,8 +54,11 @@ from app.api import (
     bookings,
     notifications,
     invoices,
+    invoice_public,
+    monetico_webhook,
     insurances,
     forex_hedges,
+    promo_codes,
 )
 
 settings = get_settings()
@@ -62,8 +69,33 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     # Startup
     print(f"🚀 Starting {settings.app_name}...")
+
+    # Initialize scheduler for background jobs
+    from app.services.invoice_reminder_service import process_invoice_reminders
+    from app.services.appointment_reminder_service import process_appointment_reminders
+
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(
+        process_invoice_reminders,
+        trigger=CronTrigger(hour=8, minute=0),  # 08:00 UTC = 10:00 Paris
+        id="invoice_reminders",
+        name="Send invoice payment reminders",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        process_appointment_reminders,
+        trigger=CronTrigger(hour=7, minute=0),  # 07:00 UTC = 09:00 Paris
+        id="appointment_reminders",
+        name="Send appointment reminders (J-1)",
+        replace_existing=True,
+    )
+    scheduler.start()
+    print("📅 Scheduler started — invoice reminders (08:00 UTC) + appointment reminders (07:00 UTC)")
+
     yield
+
     # Shutdown
+    scheduler.shutdown(wait=False)
     print(f"👋 Shutting down {settings.app_name}...")
 
 
@@ -127,6 +159,7 @@ app.include_router(locations.router, prefix="/locations", tags=["Locations"])  #
 app.include_router(payment_terms.router)  # Payment terms CRUD
 app.include_router(content.router, prefix="/content", tags=["Content Articles"])  # Multi-language SEO content
 app.include_router(content_import.router)  # Content import from URL with AI
+app.include_router(cms_snippets.router, tags=["CMS Snippets"])  # Editable UI content snippets
 app.include_router(cost_natures.router, prefix="/cost-natures", tags=["Cost Natures"])
 app.include_router(pax_categories.router, prefix="/pax-categories", tags=["PAX Categories"])
 app.include_router(country_vat_rates.router, prefix="/country-vat-rates", tags=["VAT Rates"])
@@ -135,8 +168,11 @@ app.include_router(day_templates.router)  # /day-templates endpoints
 app.include_router(bookings.router, prefix="/bookings", tags=["Bookings"])
 app.include_router(notifications.router, prefix="/notifications", tags=["Notifications"])
 app.include_router(invoices.router, prefix="/invoices", tags=["Invoices"])
+app.include_router(invoice_public.router, tags=["Public Invoices"])  # No auth — client access via share token
+app.include_router(monetico_webhook.router, tags=["Monetico Webhooks"])  # No auth — bank-to-server notification
 app.include_router(insurances.router, prefix="/insurances", tags=["Trip Insurances"])
 app.include_router(forex_hedges.router, prefix="/forex-hedges", tags=["Forex Hedges"])
+app.include_router(promo_codes.router, prefix="/promo-codes", tags=["Promo Codes"])  # Admin-only promo code management
 
 
 @app.get("/", tags=["Health"])
