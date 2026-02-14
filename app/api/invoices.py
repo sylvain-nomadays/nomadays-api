@@ -136,6 +136,7 @@ class PaymentLinkResponse(BaseModel):
     paid_amount: Optional[Decimal] = None
     payment_method: Optional[str] = None
     payment_ref: Optional[str] = None
+    payment_url: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -158,7 +159,17 @@ class InvoiceSummaryResponse(BaseModel):
     parent_invoice_id: Optional[int] = None
     dossier_id: Optional[uuid.UUID] = None
     pax_count: Optional[int] = None
+    share_token: Optional[uuid.UUID] = None
     created_at: datetime
+    # Extra fields for standalone invoices page
+    dossier_reference: Optional[str] = None
+    created_by_name: Optional[str] = None
+    travel_start_date: Optional[date] = None
+    travel_end_date: Optional[date] = None
+    # Payment reminder
+    reminder_enabled: bool = True
+    reminder_date: Optional[date] = None
+    reminder_sent_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -234,6 +245,14 @@ class InvoiceDetailResponse(BaseModel):
     created_by_id: Optional[uuid.UUID] = None
     sent_at: Optional[datetime] = None
     sent_to_email: Optional[str] = None
+    # Sharing
+    share_token: Optional[uuid.UUID] = None
+    share_token_created_at: Optional[datetime] = None
+    shared_link_viewed_at: Optional[datetime] = None
+    # Payment reminder
+    reminder_enabled: bool = True
+    reminder_date: Optional[date] = None
+    reminder_sent_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
     # Nested
@@ -292,6 +311,39 @@ def _assert_invoice_editable(invoice: Invoice) -> None:
 # Endpoints
 # ============================================================================
 
+
+class SellerResponse(BaseModel):
+    id: str
+    name: str
+
+
+@router.get("/sellers", response_model=List[SellerResponse])
+async def list_invoice_sellers(
+    db: DbSession,
+    tenant: CurrentTenant,
+):
+    """List distinct users who have created invoices for this tenant."""
+    from app.models.user import User
+
+    query = (
+        select(User.id, User.first_name, User.last_name)
+        .join(Invoice, Invoice.created_by_id == User.id)
+        .where(Invoice.tenant_id == tenant.id)
+        .distinct()
+        .order_by(User.first_name, User.last_name)
+    )
+    result = await db.execute(query)
+    rows = result.all()
+
+    sellers = []
+    for row in rows:
+        name_parts = [row.first_name, row.last_name]
+        name = " ".join(p for p in name_parts if p) or "Utilisateur"
+        sellers.append(SellerResponse(id=str(row.id), name=name))
+
+    return sellers
+
+
 @router.get("", response_model=InvoiceListResponse)
 async def list_invoices(
     db: DbSession,
@@ -302,10 +354,22 @@ async def list_invoices(
     type: Optional[str] = None,
     status_filter: Optional[str] = Query(None, alias="status"),
     search: Optional[str] = None,
+    # New filters for standalone invoices page
+    created_by_id: Optional[uuid.UUID] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    due_date_from: Optional[date] = None,
+    due_date_to: Optional[date] = None,
+    overdue: Optional[bool] = None,
 ):
     """List invoices with pagination and filters."""
+    from app.models.dossier import Dossier
+    from app.models.user import User
+
     query = (
         select(Invoice)
+        .outerjoin(Dossier, Invoice.dossier_id == Dossier.id)
+        .outerjoin(User, Invoice.created_by_id == User.id)
         .where(Invoice.tenant_id == tenant.id)
         .order_by(Invoice.created_at.desc())
     )
@@ -313,6 +377,7 @@ async def list_invoices(
     count_query = (
         select(func.count())
         .select_from(Invoice)
+        .outerjoin(Dossier, Invoice.dossier_id == Dossier.id)
         .where(Invoice.tenant_id == tenant.id)
     )
 
@@ -330,26 +395,72 @@ async def list_invoices(
 
     if search:
         search_term = f"%{search}%"
-        query = query.where(
+        search_filter = (
             (Invoice.number.ilike(search_term))
             | (Invoice.client_name.ilike(search_term))
             | (Invoice.client_company.ilike(search_term))
+            | (Dossier.reference.ilike(search_term))
         )
-        count_query = count_query.where(
-            (Invoice.number.ilike(search_term))
-            | (Invoice.client_name.ilike(search_term))
-            | (Invoice.client_company.ilike(search_term))
+        query = query.where(search_filter)
+        count_query = count_query.where(search_filter)
+
+    if created_by_id:
+        query = query.where(Invoice.created_by_id == created_by_id)
+        count_query = count_query.where(Invoice.created_by_id == created_by_id)
+
+    if date_from:
+        query = query.where(Invoice.issue_date >= date_from)
+        count_query = count_query.where(Invoice.issue_date >= date_from)
+
+    if date_to:
+        query = query.where(Invoice.issue_date <= date_to)
+        count_query = count_query.where(Invoice.issue_date <= date_to)
+
+    if due_date_from:
+        query = query.where(Invoice.due_date >= due_date_from)
+        count_query = count_query.where(Invoice.due_date >= due_date_from)
+
+    if due_date_to:
+        query = query.where(Invoice.due_date <= due_date_to)
+        count_query = count_query.where(Invoice.due_date <= due_date_to)
+
+    if overdue:
+        today = date.today()
+        overdue_filter = (
+            Invoice.due_date.isnot(None)
+            & (Invoice.due_date < today)
+            & Invoice.status.in_(["draft", "sent"])
         )
+        query = query.where(overdue_filter)
+        count_query = count_query.where(overdue_filter)
 
     total_result = await db.execute(count_query)
     total = total_result.scalar() or 0
 
+    # Load with joined data for extra fields
+    query = query.add_columns(Dossier.reference.label("dossier_reference"), User.first_name, User.last_name)
     query = query.offset((page - 1) * page_size).limit(page_size)
     result = await db.execute(query)
-    invoices = result.scalars().all()
+    rows = result.all()
+
+    items = []
+    for row in rows:
+        inv = row[0]  # Invoice object
+        dossier_ref = row[1]  # Dossier.reference
+        first_name = row[2]  # User.first_name
+        last_name = row[3]  # User.last_name
+
+        item = InvoiceSummaryResponse.model_validate(inv)
+        item.dossier_reference = dossier_ref
+        # Build user display name
+        name_parts = [first_name, last_name]
+        item.created_by_name = " ".join(p for p in name_parts if p) or None
+        item.travel_start_date = inv.travel_start_date
+        item.travel_end_date = inv.travel_end_date
+        items.append(item)
 
     return InvoiceListResponse(
-        items=[InvoiceSummaryResponse.model_validate(inv) for inv in invoices],
+        items=items,
         total=total,
         page=page,
         page_size=page_size,
@@ -795,6 +906,191 @@ async def advance_invoice_workflow(
     new_invoice = result.scalar_one()
 
     return InvoiceDetailResponse.model_validate(new_invoice)
+
+
+# ============================================================================
+# Sharing — public link for client access
+# ============================================================================
+
+@router.post("/{invoice_id}/share")
+async def create_share_link(
+    invoice_id: int,
+    db: DbSession,
+    tenant: CurrentTenant,
+):
+    """Generate a shareable public link for an invoice."""
+    result = await db.execute(
+        select(Invoice)
+        .where(Invoice.id == invoice_id, Invoice.tenant_id == tenant.id)
+        .options(selectinload(Invoice.lines))
+    )
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
+
+    if invoice.status == "draft":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Impossible de partager un brouillon. Envoyez le document d'abord.",
+        )
+
+    token = await InvoiceService.generate_share_token(db, invoice)
+
+    # Auto-generate PDF if not yet done
+    if not invoice.pdf_url:
+        sender_info = tenant.invoice_sender_info or {}
+        try:
+            pdf_url = await generate_and_store_pdf(invoice, invoice.lines, tenant, sender_info)
+            invoice.pdf_url = pdf_url
+            invoice.pdf_generated_at = datetime.utcnow()
+            await db.commit()
+        except Exception:
+            pass  # PDF gen failure should not block share link creation
+
+    return {
+        "share_token": str(token),
+        "share_url": f"/invoices/{token}",
+        "created_at": str(invoice.share_token_created_at),
+        "viewed_at": str(invoice.shared_link_viewed_at) if invoice.shared_link_viewed_at else None,
+    }
+
+
+@router.get("/{invoice_id}/share")
+async def get_share_info(
+    invoice_id: int,
+    db: DbSession,
+    tenant: CurrentTenant,
+):
+    """Get sharing info for an invoice (token, URL, view status)."""
+    result = await db.execute(
+        select(Invoice)
+        .where(Invoice.id == invoice_id, Invoice.tenant_id == tenant.id)
+    )
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
+
+    if not invoice.share_token:
+        return {"shared": False, "share_token": None, "share_url": None, "viewed_at": None}
+
+    return {
+        "shared": True,
+        "share_token": str(invoice.share_token),
+        "share_url": f"/invoices/{invoice.share_token}",
+        "created_at": str(invoice.share_token_created_at),
+        "viewed_at": str(invoice.shared_link_viewed_at) if invoice.shared_link_viewed_at else None,
+    }
+
+
+# ============================================================================
+# Payment Reminder — Toggle automatic reminder
+# ============================================================================
+
+
+class ReminderToggleRequest(BaseModel):
+    enabled: bool
+
+
+@router.patch("/{invoice_id}/reminder")
+async def toggle_invoice_reminder(
+    invoice_id: int,
+    data: ReminderToggleRequest,
+    db: DbSession,
+    tenant: CurrentTenant,
+    user: CurrentUser,
+):
+    """
+    Enable or disable the automatic payment reminder for an FA invoice.
+    Only applicable to FA invoices that are not yet paid or cancelled.
+    """
+    result = await db.execute(
+        select(Invoice)
+        .where(Invoice.id == invoice_id, Invoice.tenant_id == tenant.id)
+    )
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
+
+    if invoice.type != "FA":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Les relances automatiques ne s'appliquent qu'aux factures (FA).",
+        )
+
+    if invoice.status in ("paid", "cancelled"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Impossible de modifier la relance d'une facture payée ou annulée.",
+        )
+
+    invoice.reminder_enabled = data.enabled
+    await db.commit()
+
+    return {
+        "message": f"Relance {'activée' if data.enabled else 'désactivée'}",
+        "reminder_enabled": invoice.reminder_enabled,
+        "reminder_date": str(invoice.reminder_date) if invoice.reminder_date else None,
+    }
+
+
+# ============================================================================
+# Payment Links — Monetico online payment
+# ============================================================================
+
+@router.post("/{invoice_id}/payment-links/{link_id}/pay")
+async def initiate_payment(
+    invoice_id: int,
+    link_id: int,
+    db: DbSession,
+    tenant: CurrentTenant,
+):
+    """
+    Generate a Monetico payment URL for a specific payment link.
+
+    Returns the payment URL (or a stub message if Monetico is not configured).
+    """
+    from app.services.monetico_service import monetico_service
+
+    # Load invoice + verify tenant
+    result = await db.execute(
+        select(Invoice)
+        .where(Invoice.id == invoice_id, Invoice.tenant_id == tenant.id)
+        .options(selectinload(Invoice.payment_links))
+    )
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    # Find the payment link
+    payment_link = next((pl for pl in invoice.payment_links if pl.id == link_id), None)
+    if not payment_link:
+        raise HTTPException(status_code=404, detail="Payment link not found")
+
+    if payment_link.status == "paid":
+        raise HTTPException(status_code=400, detail="Payment link already paid")
+
+    # Generate Monetico payment request
+    base_url = "https://www.nomadays.com"  # TODO: use env var
+    payment_result = monetico_service.create_payment_request(
+        amount=float(payment_link.amount),
+        currency=invoice.currency or "EUR",
+        reference=f"PL-{payment_link.id}",
+        return_url=f"{base_url}/invoices/{invoice.share_token}",
+        cancel_url=f"{base_url}/invoices/{invoice.share_token}",
+        notify_url=f"{base_url}/api/webhooks/monetico/payment-return",
+    )
+
+    # Store payment URL if available
+    if payment_result.get("payment_url"):
+        payment_link.payment_url = payment_result["payment_url"]
+        await db.commit()
+
+    return {
+        "payment_url": payment_result.get("payment_url"),
+        "payment_id": payment_result.get("payment_id"),
+        "status": payment_result.get("status", "stub"),
+        "message": payment_result.get("message"),
+    }
 
 
 # ============================================================================

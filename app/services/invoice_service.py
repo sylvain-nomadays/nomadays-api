@@ -10,7 +10,7 @@ Handles:
 """
 
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
@@ -558,6 +558,16 @@ class InvoiceService:
             notes=f"Facture solde générée automatiquement au paiement de la proforma {pro_invoice.number}",
             created_by_id=pro_invoice.created_by_id,
         )
+
+        # Auto-calculate reminder date = due_date - 7 days
+        if balance_due_date:
+            reminder_candidate = balance_due_date - timedelta(days=7)
+            if reminder_candidate >= today:
+                fa_invoice.reminder_date = reminder_candidate
+            else:
+                # Échéance très proche — planifier pour aujourd'hui
+                fa_invoice.reminder_date = today
+
         db.add(fa_invoice)
         await db.flush()  # Get fa_invoice.id
 
@@ -748,3 +758,34 @@ class InvoiceService:
         await db.refresh(credit_note)
 
         return credit_note
+
+    # ------------------------------------------------------------------
+    # Sharing — public link for client access
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def generate_share_token(
+        db: AsyncSession,
+        invoice: Invoice,
+    ) -> uuid.UUID:
+        """
+        Generate a share token for public access to an invoice.
+        Idempotent: if a token already exists, returns it unchanged.
+        """
+        if invoice.share_token:
+            return invoice.share_token
+
+        token = uuid.uuid4()
+        invoice.share_token = token
+        invoice.share_token_created_at = datetime.utcnow()
+        await db.commit()
+        return token
+
+    @staticmethod
+    async def record_share_view(
+        db: AsyncSession,
+        invoice: Invoice,
+    ) -> None:
+        """Record that a client viewed the invoice via the share link."""
+        invoice.shared_link_viewed_at = datetime.utcnow()
+        await db.commit()

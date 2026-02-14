@@ -1862,6 +1862,12 @@ class BookableItem(BaseModel):
     booking_requested_by: Optional[str] = None
     booking_days_waiting: Optional[int] = None  # Days since request was made
     booking_overdue: bool = False  # True if waiting > 2 business days
+    # Echanges tab fields
+    cost_nature_code: Optional[str] = None  # HTL, TRS, ACT, RES, GDE
+    cost_nature_label: Optional[str] = None  # Hébergement, Transport, etc.
+    booking_id: Optional[int] = None  # For saving logistics_alternative
+    supplier_response_note: Optional[str] = None  # Supplier feedback (refusal reason)
+    logistics_alternative: Optional[str] = None  # Alternative proposed by logistics
 
 
 class PreBookingRequest(BaseModel):
@@ -1920,6 +1926,9 @@ async def get_bookable_items(
             Booking.created_at,
             User.first_name,
             User.last_name,
+            Booking.id,
+            Booking.supplier_response_note,
+            Booking.logistics_alternative,
         )
         .outerjoin(User, Booking.requested_by_id == User.id)
         .where(Booking.trip_id == trip_id)
@@ -1937,6 +1946,9 @@ async def get_bookable_items(
                 "status": row[1],
                 "created_at": row[2],
                 "requested_by": requester_name,
+                "booking_id": row[5],
+                "supplier_response_note": row[6],
+                "logistics_alternative": row[7],
             }
 
     from datetime import timedelta
@@ -1989,6 +2001,11 @@ async def get_bookable_items(
             booking_requested_by=booking_info["requested_by"] if booking_info else None,
             booking_days_waiting=days_waiting,
             booking_overdue=is_overdue,
+            cost_nature_code=item.cost_nature.code if item.cost_nature else None,
+            cost_nature_label=item.cost_nature.label if item.cost_nature else None,
+            booking_id=booking_info.get("booking_id") if booking_info else None,
+            supplier_response_note=booking_info.get("supplier_response_note") if booking_info else None,
+            logistics_alternative=booking_info.get("logistics_alternative") if booking_info else None,
         ))
 
     return items_out

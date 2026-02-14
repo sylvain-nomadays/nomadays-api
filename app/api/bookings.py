@@ -82,6 +82,7 @@ class BookingDetail(BaseModel):
     email_sent_at: Optional[datetime] = None
     email_sent_to: Optional[str] = None
     supplier_response_note: Optional[str] = None
+    logistics_alternative: Optional[str] = None
     formula_id: Optional[int] = None
     formula_name: Optional[str] = None
     block_type: Optional[str] = None
@@ -99,6 +100,7 @@ class BookingUpdate(BaseModel):
     supplier_response_note: Optional[str] = None
     confirmation_ref: Optional[str] = None
     assigned_to_id: Optional[str] = None  # UUID as string
+    logistics_alternative: Optional[str] = None
 
 
 class BookingStatusUpdate(BaseModel):
@@ -165,6 +167,7 @@ def booking_to_detail(booking: Booking) -> BookingDetail:
         email_sent_at=booking.email_sent_at,
         email_sent_to=booking.email_sent_to,
         supplier_response_note=booking.supplier_response_note,
+        logistics_alternative=booking.logistics_alternative,
         formula_id=booking.formula_id,
         formula_name=booking.formula.name if booking.formula else None,
         block_type=booking.formula.block_type if booking.formula else None,

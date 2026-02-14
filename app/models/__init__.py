@@ -32,6 +32,7 @@ from app.models.cotation import TripCotation
 from app.models.booking import Booking, PaymentSchedule
 from app.models.invoice import Invoice, InvoiceLine, InvoiceVatDetail, InvoiceNumberSequence, InvoicePaymentLink
 from app.models.trip_insurance import TripInsurance
+from app.models.promo_code import PromoCode, PromoCodeUsage
 from app.models.forex_hedge import ForexHedge
 from app.models.alert import AIAlert
 from app.models.audit import AuditLog
@@ -47,6 +48,7 @@ from app.models.content import (
     ContentRelationType,
     AIGenerationStatus,
 )
+from app.models.cms_snippet import CmsSnippet
 
 __all__ = [
     "Base",
@@ -98,6 +100,9 @@ __all__ = [
     "InvoiceNumberSequence",
     "InvoicePaymentLink",
     "TripInsurance",
+    # Promo codes
+    "PromoCode",
+    "PromoCodeUsage",
     "ForexHedge",
     "AIAlert",
     "AuditLog",
@@ -112,4 +117,6 @@ __all__ = [
     "ContentStatus",
     "ContentRelationType",
     "AIGenerationStatus",
+    # CMS Snippets
+    "CmsSnippet",
 ]

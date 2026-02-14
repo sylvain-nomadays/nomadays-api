@@ -181,6 +181,37 @@ class Invoice(TenantBase):
     sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     sent_to_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
+    # Sharing (public link for client access)
+    share_token: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), nullable=True, unique=True, index=True,
+    )
+    share_token_created_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    shared_link_viewed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+
+    # Billing address (validated by client on public page)
+    billing_address_line1: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    billing_address_line2: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    billing_address_city: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    billing_address_postal: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    billing_address_country: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    billing_address_validated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+
+    # CGV acceptance
+    cgv_accepted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+
+    # Payment reminder
+    reminder_enabled: Mapped[bool] = mapped_column(Boolean, server_default="true", nullable=False)
+    reminder_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    reminder_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
     # Relationships
     dossier: Mapped[Optional["Dossier"]] = relationship("Dossier", back_populates="invoices")
     trip: Mapped[Optional["Trip"]] = relationship("Trip")
@@ -287,6 +318,7 @@ class InvoicePaymentLink(TenantBase):
     paid_amount: Mapped[Optional[Decimal]] = mapped_column(DECIMAL(12, 2), nullable=True)
     payment_method: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     payment_ref: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    payment_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Relationships
     invoice: Mapped["Invoice"] = relationship("Invoice", back_populates="payment_links")

@@ -233,10 +233,7 @@
             line-height: 1.4;
             padding-top: 10px;
             border-top: 1px solid #e5e5e5;
-            position: fixed;
-            bottom: 0;
-            left: 15mm;
-            right: 15mm;
+            margin-top: 20px;
         }
 
         .legal-footer p {
@@ -268,6 +265,55 @@
             margin-top: 8px;
             font-size: 9pt;
             color: #666;
+        }
+
+        /* Bank details */
+        .bank-details {
+            margin-top: 12px;
+            padding: 10px 12px;
+            background: #f0fafb;
+            border: 1px solid #cce8ea;
+            border-radius: 4px;
+        }
+
+        .bank-details-title {
+            font-size: 9pt;
+            font-weight: 700;
+            color: #0FB6BC;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+
+        .bank-field {
+            font-size: 8pt;
+            margin-bottom: 3px;
+        }
+
+        .bank-field .bank-label {
+            color: #888;
+        }
+
+        .bank-field .bank-value {
+            color: #333;
+            font-weight: 600;
+        }
+
+        .bank-iban {
+            font-family: 'Courier New', Courier, monospace;
+            letter-spacing: 1px;
+        }
+
+        .bank-reference {
+            margin-top: 8px;
+            padding-top: 6px;
+            border-top: 1px solid #cce8ea;
+            font-size: 8pt;
+            color: #666;
+        }
+
+        .bank-reference strong {
+            color: #333;
         }
     </style>
 </head>
@@ -310,7 +356,6 @@
                     <strong>{{ invoice.client_name or '' }}</strong><br>
                 {% endif %}
                 {% if invoice.client_address %}{{ invoice.client_address }}<br>{% endif %}
-                {% if invoice.client_email %}{{ invoice.client_email }}{% endif %}
                 {% if invoice.client_siret %}<br>SIRET : {{ invoice.client_siret }}{% endif %}
                 {% if invoice.client_siren %}<br>SIREN : {{ invoice.client_siren }}{% endif %}
                 {% if invoice.client_vat_number %}<br>TVA Intra. : {{ invoice.client_vat_number }}{% endif %}
@@ -327,11 +372,17 @@
         <div class="col">
             <div class="section-title">Voyage</div>
             <div class="travel-info">
+                {% if destination %}
+                    Destination : {{ destination }}<br>
+                {% endif %}
+                {% if partner_name %}
+                    Partenaire : {{ partner_name }}<br>
+                {% endif %}
                 {% if invoice.travel_start_date and invoice.travel_end_date %}
                     Du {{ format_date(invoice.travel_start_date) }} au {{ format_date(invoice.travel_end_date) }}<br>
                 {% endif %}
-                {% if invoice.dossier_id %}
-                    Référence dossier : {{ invoice.dossier_id }}
+                {% if dossier_reference %}
+                    Référence dossier : {{ dossier_reference }}
                 {% endif %}
             </div>
         </div>
@@ -408,8 +459,7 @@
         </div>
         {% endif %}
         <div style="margin-top: 10px; font-size: 9pt; color: #666;">
-            Paiement par virement bancaire<br>
-            Référence : {{ invoice.number }}
+            Paiement par virement bancaire — Référence : {{ invoice.number }}
         </div>
     </div>
     {% endif %}

@@ -76,6 +76,15 @@ def get_country_name(country_code: str) -> str:
     return COUNTRY_NAMES.get(country_code.upper(), country_code)
 
 
+# Reverse mapping: country name → ISO code
+_COUNTRY_CODES: dict[str, str] = {name.lower(): code for code, name in COUNTRY_NAMES.items()}
+
+
+def get_country_code(country_name: str) -> str | None:
+    """Get ISO 2-letter code from country name (case-insensitive). Returns None if unknown."""
+    return _COUNTRY_CODES.get(country_name.strip().lower())
+
+
 # ============================================================================
 # Data classes
 # ============================================================================

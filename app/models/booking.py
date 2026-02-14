@@ -109,6 +109,9 @@ class Booking(TenantBase):
     # Supplier response
     supplier_response_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # Logistics alternative (proposed by logistics team when supplier declines)
+    logistics_alternative: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # Link to source formula (block in circuit)
     formula_id: Mapped[Optional[int]] = mapped_column(
         BigInteger,

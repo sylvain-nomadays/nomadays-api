@@ -1,20 +1,24 @@
 """
 Invoice PDF generation service.
-Uses Jinja2 for HTML templating + WeasyPrint for PDF conversion.
+Uses Jinja2 for HTML templating + Playwright (Chromium) for PDF conversion.
 
-If WeasyPrint is not available, falls back to returning HTML only.
+Fallback to WeasyPrint if Playwright is not available.
 """
 
+import logging
 import os
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Optional
 
+logger = logging.getLogger(__name__)
+
 from jinja2 import Environment, FileSystemLoader
 
 from app.models.invoice import Invoice, InvoiceLine
 from app.models.tenant import Tenant
+from app.services.destination_suggester import get_country_name
 
 
 # Template directory
@@ -107,6 +111,20 @@ def render_invoice_html(
         "AV": "AVOIR",
     }
 
+    # Destination & partner from tenant
+    destination = get_country_name(tenant.country_code) if tenant.country_code else None
+    partner_name = tenant.name if tenant.name else None
+
+    # Dossier reference (real reference, not UUID)
+    # Use dossier_reference attribute directly to avoid lazy-loading in async context
+    dossier_reference = None
+    try:
+        if hasattr(invoice, "dossier") and invoice.dossier:
+            dossier_reference = invoice.dossier.reference
+    except Exception:
+        # Lazy load fails in async context — fallback to dossier_id display
+        pass
+
     # Build template context
     context = {
         # Document
@@ -122,6 +140,10 @@ def render_invoice_html(
         "is_eu": invoice.vat_regime == "margin",
         "show_deposit_balance": invoice.type in ("DEV", "PRO", "FA") and invoice.deposit_amount and invoice.deposit_amount > 0,
         "generated_at": datetime.now().strftime("%d/%m/%Y à %H:%M"),
+        # Voyage info
+        "destination": destination,
+        "partner_name": partner_name,
+        "dossier_reference": dossier_reference,
     }
 
     return template.render(**context)
@@ -136,18 +158,38 @@ async def generate_pdf_bytes(
     """
     Generate PDF bytes from invoice data.
 
-    Uses WeasyPrint if available, otherwise raises ImportError.
+    Uses Playwright (Chromium headless) for reliable PDF rendering.
+    Falls back to WeasyPrint if Playwright is not available.
     """
     html = render_invoice_html(invoice, lines, tenant, sender_info)
 
+    # Try Playwright first (no native C dependencies needed)
+    try:
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            page = await browser.new_page()
+            await page.set_content(html, wait_until="networkidle")
+            pdf_bytes = await page.pdf(
+                format="A4",
+                margin={"top": "20mm", "right": "15mm", "bottom": "25mm", "left": "15mm"},
+                print_background=True,
+            )
+            await browser.close()
+        return pdf_bytes
+    except Exception as e:
+        logger.warning("Playwright PDF generation failed: %s", e, exc_info=True)
+
+    # Fallback to WeasyPrint
     try:
         from weasyprint import HTML
         pdf_bytes = HTML(string=html).write_pdf()
         return pdf_bytes
-    except ImportError:
-        raise ImportError(
-            "WeasyPrint is required for PDF generation. "
-            "Install it with: pip install weasyprint"
+    except Exception as e2:
+        logger.error("WeasyPrint PDF generation also failed: %s", e2, exc_info=True)
+        raise RuntimeError(
+            f"PDF generation failed. Playwright error: {e}. WeasyPrint error: {e2}."
         )
 
 

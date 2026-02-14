@@ -164,6 +164,9 @@ class Trip(TenantBase):
     info_cancellation_policy_html: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     info_additional_html: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # Advisor notes (for proposal comparison — client-facing)
+    advisor_notes_html: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # Roadbook (client-facing enriched itinerary)
     roadbook_intro_html: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
@@ -436,6 +439,15 @@ class TripPaxConfig(TenantBase):
     total_profit: Mapped[Decimal] = mapped_column(DECIMAL(12, 2), default=Decimal("0.00"))
     cost_per_person: Mapped[Decimal] = mapped_column(DECIMAL(12, 2), default=Decimal("0.00"))
     price_per_person: Mapped[Decimal] = mapped_column(DECIMAL(12, 2), default=Decimal("0.00"))
+
+    # Multi-tarif options
+    valid_until: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=True)
+    option_type: Mapped[str] = mapped_column(String(20), default="base")  # base, supplement, alternative
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    supplement_price: Mapped[Optional[Decimal]] = mapped_column(DECIMAL(12, 2), nullable=True)
+    supplement_per_person: Mapped[bool] = mapped_column(Boolean, default=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
 
     # Relationships
     trip: Mapped["Trip"] = relationship("Trip", back_populates="pax_configs")
